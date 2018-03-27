@@ -1,0 +1,14 @@
+[package]
+name = "sse"
+version = "0.1.0"
+authors = ["yjh0502 <yjh0502@gmail.com>"]
+
+[dependencies]
+bitflags = "1"
+bytes = "0.4"
+error-chain = "0.11"
+futures = "0.1"
+hyper = "0.11"
+log = "0.4"
+tokio-core = "0.1"
+tokio-timer = "0.1"
