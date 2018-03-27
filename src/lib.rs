@@ -11,9 +11,6 @@ extern crate log;
 #[macro_use]
 extern crate bitflags;
 
-// server sent events
-use std::io::Write;
-
 use bytes::*;
 use futures::*;
 use futures::future::*;
@@ -121,12 +118,10 @@ pub struct BroadcastMessage {
 impl BroadcastMessage {
     /// `data` should not contain newline...
     pub fn new(event: &str, data: String) -> Self {
-        let mut buf = BytesMut::with_capacity(512).writer();
-        write!(buf, "event: {}\ndata: {}\n\n", event, data).expect("msg write failed");
-
-        let inner: Bytes = buf.into_inner().freeze();
-
-        Self { inner }
+        let s = format!("event: {}\ndata: {}\n\n", event, data);
+        Self {
+            inner: Bytes::from(s),
+        }
     }
 }
 
