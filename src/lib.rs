@@ -262,55 +262,109 @@ impl Broadcast {
     }
 }
 
+#[derive(Default, PartialEq, Eq, Debug)]
+pub struct Event {
+    pub event: String,
+    pub data: String,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+enum ParseError {
+    InvalidLine,
+    Invalid,
+    Other,
+}
+
 // client
-fn parse_sse_chunk<'a>(s: &'a str) -> Option<(String, String)> {
-    let lines = s.split("\n");
-
-    let mut event = String::new();
-    let mut data = String::new();
-
-    for line in lines {
+fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
+    let mut event = Event::default();
+    for line in s.split("\n") {
         if line.is_empty() {
             continue;
         }
 
         let mut tup = line.splitn(2, ": ");
-        let first = tup.next()?;
-        let second = tup.next()?;
+        let first = tup.next().ok_or(ParseError::InvalidLine)?;
+        let second = tup.next().ok_or(ParseError::InvalidLine)?;
+
+        if first.is_empty() {
+            return Err(ParseError::Invalid);
+        }
 
         if first == "event" {
-            event = second.to_owned();
+            if !event.event.is_empty() {
+                // should be only one `event` row
+                return Err(ParseError::Invalid);
+            }
+            event.event = second.to_owned();
         } else {
-            data += second;
+            event.data += second;
         }
     }
+    if event.event.is_empty() {
+        return Err(ParseError::Invalid);
+    }
 
-    Some((event, data))
+    Ok(event)
+}
+
+fn parse_sse_chunks(s: &str) -> Result<(Vec<Event>, String), ParseError> {
+    let mut out = Vec::new();
+
+    let mut msgs = s.split("\n\n");
+    let mut msg_chunk = msgs.next().ok_or(ParseError::Other)?;
+    for next_msg_chunk in msgs {
+        out.push(parse_sse_chunk(msg_chunk)?);
+        msg_chunk = next_msg_chunk;
+    }
+
+    Ok((out, msg_chunk.to_owned()))
 }
 
 struct SSEBodyStream {
     body: hyper::Body,
+    events: Vec<Event>,
+    buf: String,
 }
 impl SSEBodyStream {
     fn new(body: hyper::Body) -> Self {
-        Self { body }
+        Self {
+            body,
+            events: Vec::new(),
+            buf: String::new(),
+        }
     }
 }
 
 impl Stream for SSEBodyStream {
-    type Item = (String, String);
+    type Item = Event;
     type Error = error::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        if let Some(ev) = self.events.pop() {
+            task::current().notify();
+            return Ok(Async::Ready(Some(ev)));
+        }
+
         match try_ready!(self.body.poll()) {
             None => Ok(Async::Ready(None)),
             Some(chunk) => {
-                if let Ok(chunk_str) = std::str::from_utf8(&chunk) {
-                    if let Some(tup) = parse_sse_chunk(chunk_str) {
-                        return Ok(Async::Ready(Some(tup)));
+                let chunk_str = match std::str::from_utf8(&chunk) {
+                    Ok(s) => s,
+                    Err(_e) => {
+                        bail!("non-utf8 for SSE body");
                     }
-                }
-                bail!("invalid chunk: {:?}", String::from_utf8_lossy(&chunk));
+                };
+                self.buf += chunk_str;
+
+                let (mut events, next_buf) = match parse_sse_chunks(&self.buf) {
+                    Ok(tup) => tup,
+                    Err(_e) => bail!("invalid sse message"),
+                };
+                self.buf = next_buf;
+                events.reverse();
+                self.events = events;
+                self.poll()
             }
         }
     }
@@ -341,7 +395,7 @@ impl SSEStream {
 }
 
 impl Stream for SSEStream {
-    type Item = (String, String);
+    type Item = Event;
     type Error = error::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -396,10 +450,12 @@ mod test {
 data: test
 "#;
 
-        assert_eq!(
-            Some(("foo".to_owned(), "test".to_owned())),
-            parse_sse_chunk(s)
-        );
+        let ev = Event {
+            event: "foo".to_owned(),
+            data: "test".to_owned(),
+        };
+
+        assert_eq!(Ok(ev), parse_sse_chunk(s));
     }
 
     #[test]
@@ -410,9 +466,54 @@ data: "foo":"bar"
 data: }
 "#;
 
-        assert_eq!(
-            Some(("foo".to_owned(), r#"{"foo":"bar"}"#.to_owned())),
-            parse_sse_chunk(s)
-        );
+        let ev = Event {
+            event: "foo".to_owned(),
+            data: r#"{"foo":"bar"}"#.to_owned(),
+        };
+
+        assert_eq!(Ok(ev), parse_sse_chunk(s));
+    }
+
+    #[test]
+    fn test_two_event() {
+        let s = r#"event: foo
+data: test
+event: bar
+"#;
+        assert!(parse_sse_chunk(s).is_err());
+    }
+
+    #[test]
+    fn test_empty_data() {
+        let s = r#"event: foo
+data:
+"#;
+        assert!(parse_sse_chunk(s).is_err());
+    }
+
+    #[test]
+    fn test_chunks() {
+        let s = r#"event: foo
+data: test
+
+event: bar
+data: test2
+
+event: aa"#;
+
+        let expected_ev = vec![
+            Event {
+                event: "foo".to_owned(),
+                data: "test".to_owned(),
+            },
+            Event {
+                event: "bar".to_owned(),
+                data: "test2".to_owned(),
+            },
+        ];
+
+        let (ev, remain) = parse_sse_chunks(s).expect("should not fail on parse");
+        assert_eq!(expected_ev, ev);
+        assert_eq!("event: aa", remain);
     }
 }
