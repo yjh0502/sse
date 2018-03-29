@@ -169,6 +169,7 @@ pub enum BroadcastEvent {
     EphimeralMessage(BroadcastMessage),
 
     Reset,
+    DebugDisconnect,
 
     Inspect(unsync::oneshot::Sender<usize>),
 }
@@ -288,6 +289,11 @@ impl Broadcast {
         Box::new(ok(self))
     }
 
+    fn on_debug_disconnect(mut self) -> BroadcastFuture {
+        self.clients.clear();
+        Box::new(ok(self))
+    }
+
     pub fn on_event(self, ev: BroadcastEvent) -> BroadcastFuture {
         use self::BroadcastEvent::*;
         match ev {
@@ -295,6 +301,7 @@ impl Broadcast {
             EphimeralMessage(msg) => self.on_ephimeral_msg(msg),
             NewClient(client) => self.on_client(client),
             Reset => self.on_reset(),
+            DebugDisconnect => self.on_debug_disconnect(),
 
             Inspect(sender) => {
                 let len = self.clients.len();
