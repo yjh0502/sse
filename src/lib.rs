@@ -266,10 +266,7 @@ impl Broadcast {
 
         let f = futures_unordered(tx_iter)
             .map(|x| Some(x))
-            .or_else(|e: mpsc::SendError<HttpMsg>| {
-                trace!("{:?} client removed", e);
-                Ok::<_, ()>(None)
-            })
+            .or_else(|_e: mpsc::SendError<HttpMsg>| Ok::<_, ()>(None))
             .filter_map(|x| x)
             .collect()
             .and_then(move |mut tx_clients| {
