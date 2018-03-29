@@ -58,7 +58,7 @@ impl EventService {
     }
 
     /// (service, msg sender) pair
-    pub fn pair2(handle: Handle, opt: BroadcastFlags) -> (Self, mpsc::Sender<BroadcastEvent>) {
+    pub fn pair2(handle: &Handle, opt: BroadcastFlags) -> (Self, mpsc::Sender<BroadcastEvent>) {
         let (serv, conn_receiver) = EventService::pair();
         let (sender, receiver) = mpsc::channel(10);
 
@@ -228,7 +228,7 @@ impl Broadcast {
 
         // bypass borrow checker
         let mut tx = Vec::with_capacity(clients.len());
-        for mut c in clients.into_iter() {
+        for mut c in clients {
             // clone pending messages
             let msgs = self.messages[c.seq..seq].to_vec();
             c.seq = seq;
@@ -242,7 +242,7 @@ impl Broadcast {
         std::mem::swap(&mut self.clients, &mut clients);
 
         let mut tx = Vec::with_capacity(clients.len());
-        for mut c in clients.into_iter() {
+        for mut c in clients {
             tx.push((c, vec![msg.to_bytes()]));
         }
 
@@ -265,7 +265,7 @@ impl Broadcast {
         });
 
         let f = futures_unordered(tx_iter)
-            .map(|x| Some(x))
+            .map(Some)
             .or_else(|_e: mpsc::SendError<HttpMsg>| Ok::<_, ()>(None))
             .filter_map(|x| x)
             .collect()

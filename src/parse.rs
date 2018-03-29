@@ -11,7 +11,7 @@ pub enum ParseError {
 // client
 fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
     let mut event = Event::default();
-    for line in s.split("\n") {
+    for line in s.split('\n') {
         if line.is_empty() {
             continue;
         }
