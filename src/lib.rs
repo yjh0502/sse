@@ -266,6 +266,7 @@ impl Broadcast {
 
 #[derive(Default, PartialEq, Eq, Debug)]
 pub struct Event {
+    pub id: Option<String>,
     pub event: String,
     pub data: String,
 }

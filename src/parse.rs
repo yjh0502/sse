@@ -2,6 +2,7 @@ use Event;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ParseError {
+    UnknownField,
     InvalidLine,
     Invalid,
     Other,
@@ -23,19 +24,37 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
             return Err(ParseError::Invalid);
         }
 
-        if first == "event" {
-            if !event.event.is_empty() {
-                // should be only one `event` row
-                return Err(ParseError::Invalid);
+        match first {
+            "event" => {
+                if !event.event.is_empty() {
+                    // should be only one `event` row
+                    return Err(ParseError::Invalid);
+                }
+                event.event = second.to_owned();
             }
-            event.event = second.to_owned();
-        } else {
-            event.data += second;
+            "id" => {
+                if event.id.is_some() {
+                    // should be only one `event` row
+                    return Err(ParseError::Invalid);
+                }
+                event.id = Some(second.to_owned());
+            }
+            "data" => {
+                event.data += second;
+                event.data += "\n";
+            }
+            _ => {
+                return Err(ParseError::UnknownField);
+            }
         }
     }
+
     if event.event.is_empty() {
         return Err(ParseError::Invalid);
     }
+
+    // remove last LINE FEED
+    event.data.pop();
 
     Ok(event)
 }
@@ -61,9 +80,11 @@ mod test {
     fn test_chunk() {
         let s = r#"event: foo
 data: test
+id: 100
 "#;
 
         let ev = Event {
+            id: Some("100".to_owned()),
             event: "foo".to_owned(),
             data: "test".to_owned(),
         };
@@ -80,8 +101,9 @@ data: }
 "#;
 
         let ev = Event {
+            id: None,
             event: "foo".to_owned(),
-            data: r#"{"foo":"bar"}"#.to_owned(),
+            data: "{\n\"foo\":\"bar\"\n}".to_owned(),
         };
 
         assert_eq!(Ok(ev), parse_sse_chunk(s));
@@ -116,10 +138,12 @@ event: aa"#;
 
         let expected_ev = vec![
             Event {
+                id: None,
                 event: "foo".to_owned(),
                 data: "test".to_owned(),
             },
             Event {
+                id: None,
                 event: "bar".to_owned(),
                 data: "test2".to_owned(),
             },
