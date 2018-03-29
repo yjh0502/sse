@@ -1,6 +1,7 @@
 extern crate bytes;
 #[macro_use]
 extern crate futures;
+#[macro_use]
 extern crate hyper;
 extern crate tokio_core;
 extern crate tokio_timer;
@@ -24,6 +25,8 @@ use hyper::server::{Request, Response, Service};
 use hyper::StatusCode;
 use tokio_core::reactor::*;
 
+header! { (LastEventId, "Last-Event-ID") => [String] }
+
 mod parse;
 
 pub mod error {
@@ -38,16 +41,15 @@ pub mod error {
 
 type HttpMsg = Result<Chunk, hyper::Error>;
 type HttpSender = mpsc::Sender<HttpMsg>;
-type ConnSender = mpsc::Sender<HttpSender>;
 
 #[derive(Clone)]
 pub struct EventService {
-    sender: ConnSender,
+    sender: mpsc::Sender<(Request, HttpSender)>,
 }
 
 impl EventService {
     /// (service, connection receiver) pair
-    pub fn pair() -> (Self, mpsc::Receiver<HttpSender>) {
+    pub fn pair() -> (Self, mpsc::Receiver<(Request, HttpSender)>) {
         let (sender, receiver) = mpsc::channel(10);
         let serv = Self { sender };
         (serv, receiver)
@@ -59,7 +61,10 @@ impl EventService {
         let (sender, receiver) = mpsc::channel(10);
 
         let stream_rx = conn_receiver
-            .map(|conn| BroadcastEvent::NewClient(Client::new(conn)))
+            .map(|(req, conn)| {
+                //
+                BroadcastEvent::NewClient(Client::new(req, conn))
+            })
             .map_err(|_e| {
                 error!("error on accepting connections: {:?}", _e);
                 ()
@@ -83,47 +88,75 @@ impl Service for EventService {
     type Error = hyper::Error;
     type Future = Box<Future<Item = Response, Error = Self::Error>>;
 
-    fn call(&self, _req: Request) -> Self::Future {
-        info!("request events");
+    fn call(&self, req: Request) -> Self::Future {
         let (tx_msg, rx_msg) = mpsc::channel(10);
-        let f = self.sender
-            .clone()
-            .send(tx_msg)
-            .map_err(|_| hyper::Error::Incomplete)
-            .and_then(|_| {
+
+        let msg = (req, tx_msg);
+        let f = self.sender.clone().send(msg).then(|res| match res {
+            Ok(_) => Ok(Response::new()
+                .with_status(StatusCode::Ok)
+                .with_header(AccessControlAllowOrigin::Any)
+                .with_header(ContentType(mime::TEXT_EVENT_STREAM))
+                .with_header(Connection::keep_alive())
+                .with_body(rx_msg)),
+            Err(_e) => {
+                // failed to register client to SSE worker
                 Ok(Response::new()
-                    .with_status(StatusCode::Ok)
-                    .with_header(AccessControlAllowOrigin::Any)
-                    .with_header(ContentType(mime::TEXT_EVENT_STREAM))
-                    .with_header(Connection::keep_alive())
-                    .with_body(rx_msg))
-            });
+                    .with_status(StatusCode::ServiceUnavailable)
+                    .with_header(AccessControlAllowOrigin::Any))
+            }
+        });
         Box::new(f)
     }
 }
 
 #[derive(Debug)]
 pub struct Client {
+    req: Request,
     sender: HttpSender,
     seq: usize,
 }
 impl Client {
-    pub fn new(sender: HttpSender) -> Self {
-        Self { sender, seq: 0 }
+    pub fn new(req: Request, sender: HttpSender) -> Self {
+        let mut seq = 0;
+        if let Some(last_event_id) = req.headers().get::<LastEventId>() {
+            if let Ok(event_id) = last_event_id.parse::<usize>() {
+                seq = event_id + 1;
+            }
+        }
+
+        Self { req, sender, seq }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct BroadcastMessage {
+    event_id: Option<usize>,
+    event: String,
+    data: String,
     inner: Bytes,
 }
+
 impl BroadcastMessage {
     /// `data` should not contain newline...
     pub fn new(event: &str, data: String) -> Self {
-        let s = format!("event: {}\ndata: {}\n\n", event, data);
+        //let s = format!("event: {}\ndata: {}\n\n", event, data);
         Self {
-            inner: Bytes::from(s),
+            event: event.to_owned(),
+            data,
+            event_id: None,
+            inner: Bytes::new(),
         }
+    }
+
+    //TODO: reduce allocs
+    fn to_bytes(&self) -> Bytes {
+        let mut s = String::new();
+        if let Some(id) = self.event_id {
+            s += &format!("id: {}\n", id);
+        }
+        s += &format!("event: {}\ndata: {}\n\n", self.event, self.data);
+        Bytes::from(s)
     }
 }
 
@@ -148,7 +181,7 @@ type BroadcastFuture = Box<Future<Item = Broadcast, Error = ()>>;
 pub struct Broadcast {
     opt: BroadcastFlags,
     clients: Vec<Client>,
-    messages: Vec<BroadcastMessage>,
+    messages: Vec<Bytes>,
 }
 
 impl Broadcast {
@@ -164,23 +197,29 @@ impl Broadcast {
         trace!("client {} registered", self.clients.len());
 
         // TODO: move to somewhere else?
-        if self.opt.contains(BroadcastFlags::NO_LOG) {
-            client.seq = self.messages.len();
+        let mut seq = client.seq;
+
+        // handle invalid LastEventId
+        if seq >= self.messages.len() || self.opt.contains(BroadcastFlags::NO_LOG) {
+            seq = self.messages.len();
         }
 
         let mut clients = Vec::new();
         std::mem::swap(&mut self.clients, &mut clients);
 
-        let seq = client.seq;
+        client.seq = self.messages.len();
         let tx = vec![(client, self.messages[seq..].to_vec())];
         self.on_flush(clients, tx)
     }
 
-    fn on_msg(mut self, msg: BroadcastMessage) -> BroadcastFuture {
+    fn on_msg(mut self, mut msg: BroadcastMessage) -> BroadcastFuture {
         let mut clients = Vec::new();
         std::mem::swap(&mut self.clients, &mut clients);
 
-        self.messages.push(msg);
+        let seq = self.messages.len();
+        msg.event_id = Some(seq);
+
+        self.messages.push(msg.to_bytes());
         // seq for incoming message
         let seq = self.messages.len();
 
@@ -201,21 +240,23 @@ impl Broadcast {
 
         let mut tx = Vec::with_capacity(clients.len());
         for mut c in clients.into_iter() {
-            tx.push((c, vec![msg.clone()]));
+            tx.push((c, vec![msg.to_bytes()]));
         }
+
         self.on_flush(Vec::new(), tx)
     }
 
     fn on_flush(
         mut self,
         mut clients: Vec<Client>,
-        tx: Vec<(Client, Vec<BroadcastMessage>)>,
+        tx: Vec<(Client, Vec<Bytes>)>,
     ) -> BroadcastFuture {
         let tx_iter = tx.into_iter().map(|(c, msgs)| {
             let sender = c.sender.clone();
             iter_ok(msgs)
                 .fold(sender, |sender, msg| {
-                    sender.send(Ok(Chunk::from(msg.inner.clone())))
+                    //TODO
+                    sender.send(Ok(Chunk::from(msg)))
                 })
                 .map(move |_sender| c)
         });
