@@ -1,4 +1,4 @@
-use Event;
+use client::Event;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ParseError {
