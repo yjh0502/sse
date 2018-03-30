@@ -38,23 +38,15 @@ fn server(addr: &str, handle: Handle) -> Box<Future<Item = (), Error = ()>> {
     let mut event_counter = 0;
 
     let mut rng = rand::thread_rng();
-    let body = rng.gen_ascii_chars().take(1024 * 1024).collect::<String>();
+    let body = rng.gen_ascii_chars().take(1024 * 16).collect::<String>();
 
     let stream_send = timer
         .interval(timer_interval)
         .map_err(|_e| -> () { panic!("timer error") })
         .fold(sender, move |sender, _to| {
-            eprintln!("before send: {:?}", event_counter);
             event_counter += 1;
             let msg = BroadcastMessage::new("tick", body.clone());
-            sender
-                .send(BroadcastEvent::Message(msg))
-                /*
-                .inspect(|_| {
-                    eprintln!("after send");
-                })
-                */
-                .map_err(|_e| ())
+            sender.send(BroadcastEvent::Message(msg)).map_err(|_e| ())
         })
         .map(|_s| -> () { panic!("tick end") });
 

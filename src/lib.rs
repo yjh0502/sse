@@ -12,6 +12,8 @@ extern crate log;
 #[macro_use]
 extern crate bitflags;
 
+use std::time::Duration;
+
 use bytes::*;
 use futures::*;
 use futures::future::*;
@@ -26,6 +28,8 @@ use hyper::StatusCode;
 use tokio_core::reactor::*;
 
 header! { (LastEventId, "Last-Event-ID") => [String] }
+
+const FLUSH_DEADLINE_MS: u64 = 200;
 
 mod parse;
 mod client;
@@ -182,6 +186,8 @@ bitflags! {
 
 type BroadcastFuture = Box<Future<Item = Broadcast, Error = ()>>;
 pub struct Broadcast {
+    timer: tokio_timer::Timer,
+
     opt: BroadcastFlags,
     clients: Vec<Client>,
     messages: Vec<Bytes>,
@@ -189,7 +195,13 @@ pub struct Broadcast {
 
 impl Broadcast {
     pub fn new(opt: BroadcastFlags) -> Self {
+        let timer = tokio_timer::wheel()
+            .tick_duration(Duration::from_millis(10))
+            .build();
+
         Self {
+            timer,
+
             opt,
             clients: Vec::new(),
             messages: Vec::new(),
@@ -263,16 +275,28 @@ impl Broadcast {
         mut clients: Vec<Client>,
         tx: Vec<(Client, Vec<Result<hyper::Chunk, hyper::Error>>)>,
     ) -> BroadcastFuture {
-        let tx_iter = tx.into_iter().map(|(c, msgs)| {
-            c.sender
+        let timer = self.timer.clone();
+        let tx_iter = tx.into_iter().map(move |(c, msgs)| {
+            let f = c.sender
                 .clone()
                 .send_all(iter_ok(msgs))
-                .map(move |_sender| c)
+                .map_err(|_e| {
+                    // send error. fired when client leaves
+                })
+                .map(move |_sender| c);
+
+            timer
+                .timeout(f, Duration::from_millis(FLUSH_DEADLINE_MS))
+                .map_err(|_e| {
+                    // send timeout. actual timeout will happens when hyper internal buffer and TCP
+                    // send buffer is both full.
+                    ()
+                })
         });
 
         let f = futures_unordered(tx_iter)
             .map(Some)
-            .or_else(|_e: mpsc::SendError<HttpMsg>| Ok::<_, ()>(None))
+            .or_else(|_e: ()| Ok::<_, ()>(None))
             .filter_map(|x| x)
             .collect()
             .and_then(move |mut tx_clients| {
