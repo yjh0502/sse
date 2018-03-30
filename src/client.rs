@@ -70,7 +70,9 @@ pub struct SSEStream {
 impl SSEStream {
     pub fn new(url: hyper::Uri, handle: &Handle) -> Self {
         let client = hyper::Client::new(handle);
-        let timer = tokio_timer::Timer::default();
+        let timer = tokio_timer::wheel()
+            .tick_duration(std::time::Duration::from_millis(10))
+            .build();
         Self {
             url,
             client,

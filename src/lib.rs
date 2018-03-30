@@ -91,16 +91,16 @@ impl Service for EventService {
     type Future = Box<Future<Item = Response, Error = Self::Error>>;
 
     fn call(&self, req: Request) -> Self::Future {
-        let (tx_msg, rx_msg) = mpsc::channel(10);
+        let (sender, body) = hyper::Body::pair();
 
-        let msg = (req, tx_msg);
+        let msg = (req, sender);
         let f = self.sender.clone().send(msg).then(|res| match res {
             Ok(_) => Ok(Response::new()
                 .with_status(StatusCode::Ok)
                 .with_header(AccessControlAllowOrigin::Any)
                 .with_header(ContentType(mime::TEXT_EVENT_STREAM))
                 .with_header(Connection::keep_alive())
-                .with_body(rx_msg)),
+                .with_body(body)),
             Err(_e) => {
                 // failed to register client to SSE worker
                 Ok(Response::new()
@@ -259,7 +259,7 @@ impl Broadcast {
             iter_ok(msgs)
                 .fold(sender, |sender, msg| {
                     //TODO
-                    sender.send(Ok(Chunk::from(msg)))
+                    sender.send(Ok(msg.into()))
                 })
                 .map(move |_sender| c)
         });
