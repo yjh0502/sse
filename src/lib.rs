@@ -256,12 +256,9 @@ impl Broadcast {
     ) -> BroadcastFuture {
         let tx_iter = tx.into_iter().map(|(c, msgs)| {
             let sender = c.sender.clone();
-            iter_ok(msgs)
-                .fold(sender, |sender, msg| {
-                    //TODO
-                    sender.send(Ok(msg.into()))
-                })
-                .map(move |_sender| c)
+
+            let msgs = iter_ok(msgs.into_iter().map(|msg| Ok(msg.into())));
+            sender.send_all(msgs).map(move |_sender| c)
         });
 
         let f = futures_unordered(tx_iter)
