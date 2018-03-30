@@ -1,9 +1,6 @@
-extern crate bytes;
 extern crate env_logger;
 extern crate futures;
 extern crate hyper;
-#[macro_use]
-extern crate log;
 extern crate sse;
 extern crate tokio_core;
 extern crate tokio_timer;
@@ -28,17 +25,17 @@ impl Service for Server {
         let method = req.method().clone();
         let uri = req.uri().clone();
         match (method, uri.path()) {
-            (Get, "/events") => Box::new(self.serv.call(req)),
+            (Get, "/events") => self.serv.call(req),
 
             (Get, "/") => {
-                println!("request html");
+                eprintln!("request html");
                 Box::new(ok(Response::new()
                     .with_status(StatusCode::Ok)
                     .with_body(HTML)))
             }
 
             (method, path) => {
-                println!("invalid request method: {:?}, path: {:?}", method, path);
+                eprintln!("invalid request method: {:?}, path: {:?}", method, path);
                 Box::new(ok(Response::new().with_status(StatusCode::NotFound)))
             }
         }
@@ -57,7 +54,7 @@ fn main() {
         .serve_addr_handle(&addr, &handle, move || Ok(Server { serv: serv.clone() }))
         .expect("unable to create server");
 
-    println!("listen: {}", serve.incoming_ref().local_addr());
+    eprintln!("listen: {}", serve.incoming_ref().local_addr());
 
     let timer = tokio_timer::Timer::default();
     let timer_interval = std::time::Duration::new(1, 0);
@@ -90,7 +87,7 @@ fn main() {
         .for_each(move |conn| {
             h2.spawn(
                 conn.map(|_| ())
-                    .map_err(|err| error!("serve error: {:?}", err)),
+                    .map_err(|err| eprintln!("serve error: {:?}", err)),
             );
             Ok(())
         })
