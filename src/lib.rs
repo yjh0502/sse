@@ -211,7 +211,12 @@ impl Broadcast {
         std::mem::swap(&mut self.clients, &mut clients);
 
         client.seq = self.messages.len();
-        let tx = vec![(client, self.messages[seq..].to_vec())];
+        let chunks = self.messages[seq..]
+            .iter()
+            .map(|s| Ok(hyper::Chunk::from(s.clone())))
+            .collect::<Vec<_>>();
+
+        let tx = vec![(client, chunks)];
         self.on_flush(clients, tx)
     }
 
@@ -230,7 +235,10 @@ impl Broadcast {
         let mut tx = Vec::with_capacity(clients.len());
         for mut c in clients {
             // clone pending messages
-            let msgs = self.messages[c.seq..seq].to_vec();
+            let msgs = self.messages[c.seq..seq]
+                .iter()
+                .map(|s| Ok(hyper::Chunk::from(s.clone())))
+                .collect::<Vec<_>>();
             c.seq = seq;
             tx.push((c, msgs));
         }
@@ -242,8 +250,9 @@ impl Broadcast {
         std::mem::swap(&mut self.clients, &mut clients);
 
         let mut tx = Vec::with_capacity(clients.len());
+        let bytes = msg.to_bytes();
         for mut c in clients {
-            tx.push((c, vec![msg.to_bytes()]));
+            tx.push((c, vec![Ok(hyper::Chunk::from(bytes.clone()))]));
         }
 
         self.on_flush(Vec::new(), tx)
@@ -252,13 +261,13 @@ impl Broadcast {
     fn on_flush(
         mut self,
         mut clients: Vec<Client>,
-        tx: Vec<(Client, Vec<Bytes>)>,
+        tx: Vec<(Client, Vec<Result<hyper::Chunk, hyper::Error>>)>,
     ) -> BroadcastFuture {
         let tx_iter = tx.into_iter().map(|(c, msgs)| {
-            let sender = c.sender.clone();
-
-            let msgs = iter_ok(msgs.into_iter().map(|msg| Ok(msg.into())));
-            sender.send_all(msgs).map(move |_sender| c)
+            c.sender
+                .clone()
+                .send_all(iter_ok(msgs))
+                .map(move |_sender| c)
         });
 
         let f = futures_unordered(tx_iter)
