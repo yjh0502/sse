@@ -59,6 +59,7 @@ impl Stream for SSEBodyStream {
 pub struct SSEStream {
     url: hyper::Uri,
     client: hyper::Client<hyper::client::HttpConnector>,
+    timer: tokio_timer::Timer,
 
     fut_req: Option<Box<Future<Item = hyper::Response, Error = hyper::Error>>>,
     inner: Option<SSEBodyStream>,
@@ -69,9 +70,13 @@ pub struct SSEStream {
 impl SSEStream {
     pub fn new(url: hyper::Uri, handle: &Handle) -> Self {
         let client = hyper::Client::new(handle);
+        let timer = tokio_timer::wheel()
+            .tick_duration(std::time::Duration::from_millis(10))
+            .build();
         Self {
             url,
             client,
+            timer,
 
             fut_req: None,
             inner: None,
@@ -133,9 +138,9 @@ impl Stream for SSEStream {
         }
 
         let client = self.client.clone();
-
-        let when = Instant::now() + Duration::from_millis(100);
-        let req = tokio_timer::Delay::new(when).then(move |_| client.request(req));
+        let req = self.timer
+            .sleep(std::time::Duration::from_millis(100))
+            .then(move |_| client.request(req));
 
         self.fut_req = Some(Box::new(req));
         self.poll()
