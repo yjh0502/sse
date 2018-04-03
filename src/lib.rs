@@ -155,7 +155,6 @@ impl BroadcastMessage {
         }
     }
 
-    //TODO: reduce allocs
     fn to_bytes(&self) -> Bytes {
         let mut s = String::new();
         if let Some(id) = self.event_id {
