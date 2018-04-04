@@ -7,8 +7,8 @@ extern crate tokio_timer;
 
 use futures::future::*;
 use futures::{Future, Sink, Stream};
-use hyper::{Get, StatusCode};
 use hyper::server::{Http, Request, Response, Service};
+use hyper::{Get, StatusCode};
 use sse::*;
 
 struct Server {

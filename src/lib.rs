@@ -15,24 +15,24 @@ extern crate bitflags;
 use std::time::Duration;
 
 use bytes::*;
-use futures::*;
 use futures::future::*;
-use futures::{Future, Sink, Stream};
 use futures::stream::*;
 use futures::sync::mpsc;
+use futures::*;
+use futures::{Future, Sink, Stream};
 use hyper::Chunk;
+use hyper::StatusCode;
 use hyper::header::{AccessControlAllowOrigin, Connection, ContentType};
 use hyper::mime;
 use hyper::server::{Request, Response, Service};
-use hyper::StatusCode;
 use tokio_core::reactor::*;
 
 header! { (LastEventId, "Last-Event-ID") => [String] }
 
 const FLUSH_DEADLINE_MS: u64 = 200;
 
-mod parse;
 mod client;
+mod parse;
 pub use client::*;
 
 pub mod error {

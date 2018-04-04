@@ -9,11 +9,11 @@ extern crate tokio_timer;
 use std::rc::*;
 use std::time::Duration;
 
-use futures::*;
 use futures::future::*;
+use futures::*;
 use hyper::server::Http;
-use tokio_core::reactor::*;
 use rand::Rng;
+use tokio_core::reactor::*;
 
 use sse::*;
 
