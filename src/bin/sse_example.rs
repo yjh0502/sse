@@ -49,7 +49,7 @@ fn main() {
     let mut core = tokio_core::reactor::Core::new().expect("failed to build core");
     let handle = core.handle();
 
-    let (serv, sender) = EventService::pair2(&handle, BroadcastFlags::empty());
+    let (serv, sender) = EventService::pair_sse(&handle, BroadcastFlags::empty());
     let serve = Http::new()
         .serve_addr_handle(&addr, &handle, move || Ok(Server { serv: serv.clone() }))
         .expect("unable to create server");

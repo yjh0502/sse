@@ -20,7 +20,7 @@ use sse::*;
 fn server(addr: &str, handle: Handle) -> Box<Future<Item = (), Error = ()>> {
     let addr = addr.parse().expect("addres parsing failed");
 
-    let (serv, sender) = EventService::pair2(&handle, BroadcastFlags::empty());
+    let (serv, sender) = EventService::pair_sse(&handle, BroadcastFlags::empty());
     let serv = Rc::new(serv);
 
     let serve = Http::new()
