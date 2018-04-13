@@ -226,7 +226,6 @@ impl Service for EventService {
 
         let mut headers = self.headers.clone();
         headers.set(AccessControlAllowOrigin::Any);
-        headers.set(Connection::keep_alive());
 
         let msg = (req, sender);
         let f = self.sender.clone().send(msg).then(|res| match res {
