@@ -72,6 +72,12 @@ impl Client {
     }
 }
 
+fn hyper_resp_err() -> hyper::Response {
+    Response::new()
+        .with_status(StatusCode::ServiceUnavailable)
+        .with_header(AccessControlAllowOrigin::Any)
+}
+
 #[derive(Clone)]
 pub struct EchoService {
     handle: Handle,
@@ -121,21 +127,12 @@ impl Service for EchoService {
                             })
                     })
                     .map_err(|_e| hyper::error::Error::Method)
-                    .then(|_| {
-                        Ok(Response::new()
-                            .with_status(StatusCode::ServiceUnavailable)
-                            .with_header(AccessControlAllowOrigin::Any))
-                    });
+                    .then(|_| Ok(hyper_resp_err()));
 
                 Box::new(f)
             }
 
-            _ => {
-                let resp = Response::new()
-                    .with_status(StatusCode::ServiceUnavailable)
-                    .with_header(AccessControlAllowOrigin::Any);
-                Box::new(ok(resp))
-            }
+            _ => Box::new(ok(hyper_resp_err())),
         }
     }
 }
@@ -234,9 +231,7 @@ impl Service for EventService {
                 .with_body(body)),
             Err(_e) => {
                 // failed to register client to SSE worker
-                Ok(Response::new()
-                    .with_status(StatusCode::ServiceUnavailable)
-                    .with_header(AccessControlAllowOrigin::Any))
+                Ok(hyper_resp_err())
             }
         });
         Box::new(f)
