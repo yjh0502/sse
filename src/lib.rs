@@ -1,16 +1,16 @@
+#[macro_use]
+extern crate bitflags;
 extern crate bytes;
+#[macro_use]
+extern crate error_chain;
 #[macro_use]
 extern crate futures;
 #[macro_use]
 extern crate hyper;
-extern crate tokio_core;
-extern crate tokio_timer;
-#[macro_use]
-extern crate error_chain;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate bitflags;
+extern crate tokio_core;
+extern crate tokio_timer;
 
 use std::time::Duration;
 
