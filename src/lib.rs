@@ -21,7 +21,7 @@ use futures::sync::mpsc;
 use futures::*;
 use futures::{Future, Sink, Stream};
 use hyper::header::Headers;
-use hyper::header::{AccessControlAllowOrigin, Connection, ContentType};
+use hyper::header::{AccessControlAllowOrigin, ContentType};
 use hyper::server::{Request, Response, Service};
 use hyper::{mime, Chunk, StatusCode};
 use tokio_core::reactor::*;
@@ -100,7 +100,6 @@ impl Service for EchoService {
         use hyper::Method::*;
 
         let method = req.method().clone();
-
         match method {
             Get => {
                 let inner = self.inner.clone();
