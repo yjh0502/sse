@@ -47,7 +47,17 @@ pub mod error {
         foreign_links {
             Hyper(hyper::Error);
         }
+
+        errors {
+            InvalidUTF8(e: std::str::Utf8Error) {
+                description("invalid UTF8")
+            }
+            Protocol(e: parse::ParseError) {
+                description("protocol")
+            }
+        }
     }
+
 }
 
 type HttpMsg = Result<Chunk, hyper::Error>;

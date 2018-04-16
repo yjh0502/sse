@@ -37,15 +37,17 @@ impl Stream for SSEBodyStream {
             Some(chunk) => {
                 let chunk_str = match std::str::from_utf8(&chunk) {
                     Ok(s) => s,
-                    Err(_e) => {
-                        bail!("non-utf8 for SSE body");
+                    Err(e) => {
+                        bail!(error::ErrorKind::InvalidUTF8(e));
                     }
                 };
                 self.buf += chunk_str;
 
                 let (mut events, next_buf) = match parse::parse_sse_chunks(&self.buf) {
                     Ok(tup) => tup,
-                    Err(_e) => bail!("invalid sse message"),
+                    Err(e) => {
+                        bail!(error::ErrorKind::Protocol(e));
+                    }
                 };
                 self.buf = next_buf;
                 events.reverse();
