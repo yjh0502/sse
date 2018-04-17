@@ -42,6 +42,7 @@ impl Stream for SSEBodyStream {
                     }
                 };
                 self.buf += chunk_str;
+                self.buf = self.buf.replace("\r\n", "\n");
 
                 let (mut events, next_buf) = match parse::parse_sse_chunks(&self.buf) {
                     Ok(tup) => tup,
