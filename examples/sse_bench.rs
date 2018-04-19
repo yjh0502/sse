@@ -22,7 +22,7 @@ use futures::future::*;
 use futures::*;
 use futures_cpupool::CpuPool;
 use hyper::server::Http;
-use hyper::{Body, Client, Request};
+use hyper::Request;
 use rand::Rng;
 use tokio_core::reactor::*;
 use tokio_timer::Timer;
@@ -41,13 +41,23 @@ pub mod error {
 
 use error::*;
 
+struct NullExecutor;
+impl<F> Executor<F> for NullExecutor
+where
+    F: Future<Item = (), Error = ()>,
+{
+    fn execute(&self, _f: F) -> std::result::Result<(), ExecuteError<F>> {
+        unimplemented!();
+    }
+}
+
 #[derive(Clone)]
 struct Counter {
     count: Arc<atomic::AtomicUsize>,
 }
 
 fn spawn_client(
-    client: &Client<hyper::client::HttpConnector, Body>,
+    client: &hyper::Client<hyper::client::HttpConnector>,
     req: Request,
     counter: Counter,
 ) -> impl Future<Item = (), Error = ()> {
@@ -71,62 +81,22 @@ fn spawn_client(
     f
 }
 
-fn rand_localhost() -> String {
-    use rand::Rng;
+fn run_client(
+    client: hyper::Client<hyper::client::HttpConnector>,
+    url: hyper::Uri,
+    count: usize,
+    counter: Counter,
+) -> impl Future<Item = (), Error = Error> {
+    let clients = (0..count)
+        .map(|_n| {
+            let req = Request::new(hyper::Method::Get, url.clone());
+            spawn_client(&client, req, counter.clone())
+        })
+        .collect::<Vec<_>>();
 
-    let mut rng = rand::thread_rng();
-    let a = 127;
-    let b = 0;
-    let c: u8 = rng.gen_range(0, 254);
-    let d: u8 = rng.gen_range(0, 254);
-    format!("{}.{}.{}.{}", a, b, c, d)
-}
-
-fn run(opt: &Opt) -> Result<()> {
-    let mut core = Core::new().expect("failed to build core");
-    let handle = core.handle();
-
-    let timer = Timer::default();
-    let duration_timeout = std::time::Duration::new(opt.duration as u64, 0);
-
-    let num_threads = opt.threads;
-    let pool = CpuPool::new(num_threads);
-
-    let mut f_clients = Vec::with_capacity(num_threads);
-    for _ in 0..num_threads {
-        let opt0 = opt.clone();
-        let url = format!("http://{}:{}/", rand_localhost(), opt0.port);
-        info!("url: {:?}", url);
-        let url = url.parse::<hyper::Uri>().expect("invalid uri");
-        let connections = opt.connections / num_threads;
-
-        let f_client = pool.spawn_fn(move || {
-            let mut core = Core::new().expect("failed to build core");
-            let handle = core.handle();
-
-            core.run(run_client(url, connections, &handle))
-        });
-        f_clients.push(f_client);
-    }
-
-    let f_client = join_all(f_clients).map(|_| ());
-    let f_server = run_server(opt, &handle);
-
-    let f = timer
-        .timeout(
-            f_client.select(f_server).map_err(|_e| {
-                error!("error on bench");
-                ()
-            }),
-            duration_timeout,
-        )
+    join_all(clients)
         .map(|_| ())
-        .or_else(|e| {
-            error!("benchmark finished: {:?}", e);
-            Ok::<(), Error>(())
-        });
-
-    core.run(f)
+        .or_else(|_e| bail!("error on client"))
 }
 
 fn run_server(opt: &Opt, handle: &Handle) -> Box<Future<Item = (), Error = Error>> {
@@ -184,41 +154,86 @@ fn run_server(opt: &Opt, handle: &Handle) -> Box<Future<Item = (), Error = Error
     Box::new(f)
 }
 
-fn run_client(
-    url: hyper::Uri,
-    count: usize,
-    handle: &Handle,
-) -> Box<Future<Item = (), Error = Error>> {
+fn rand_localhost() -> String {
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+    let a = 127;
+    let b = 0;
+    let c: u8 = rng.gen_range(0, 254);
+    let d: u8 = rng.gen_range(0, 254);
+    format!("{}.{}.{}.{}", a, b, c, d)
+}
+
+fn run(opt: &Opt) -> Result<()> {
+    let mut core = Core::new().expect("failed to build core");
+    let handle = core.handle();
+
+    let timer = Timer::default();
+    let duration_timeout = std::time::Duration::new(opt.duration as u64, 0);
+
+    let num_threads = opt.threads;
+    let pool = CpuPool::new(num_threads);
+
+    let mut f_clients = Vec::with_capacity(num_threads);
     let counter = Counter {
         count: Arc::new(Default::default()),
     };
+    for _ in 0..num_threads {
+        let opt0 = opt.clone();
+        let url = format!("http://{}:{}/", rand_localhost(), opt0.port);
+        info!("url: {:?}", url);
+        let url = url.parse::<hyper::Uri>().expect("invalid uri");
+        let connections = opt.connections / num_threads;
 
-    let timer = Timer::default();
+        let counter = counter.clone();
+        let f_client = pool.spawn_fn(move || {
+            let mut core = Core::new().expect("failed to build core");
+            let handle = core.handle();
+            let client = hyper::Client::configure()
+                .connector(hyper::client::HttpConnector::new_with_executor(
+                    NullExecutor,
+                    &handle,
+                ))
+                .build(&handle);
+
+            core.run(run_client(client, url, connections, counter))
+        });
+        f_clients.push(f_client);
+    }
+
     let tick_interval = std::time::Duration::new(1, 0);
     let counter_tick = counter.clone();
     let f_tick = timer
         .interval(tick_interval)
         .map_err(|_e| panic!("Failed to set tick"))
-        .fold(counter_tick, |counter, _| {
-            info!("count: {:?}", counter.count);
-            ok::<Counter, ()>(counter)
+        .fold((counter_tick, 0), |(counter, prev), _| {
+            let count: usize = counter.count.load(atomic::Ordering::SeqCst);
+            info!("count: {:?}, {} tps", counter.count, count - prev);
+            Ok::<_, Error>((counter, count))
         })
         .into_future();
 
-    let client = Client::new(&handle);
-    let clients = (0..count)
-        .map(|_n| {
-            let req = Request::new(hyper::Method::Get, url.clone());
-            spawn_client(&client, req, counter.clone())
-        })
-        .collect::<Vec<_>>();
+    let f_client = timer
+        .sleep(Duration::from_secs(1))
+        .then(|_| join_all(f_clients).join(f_tick).map(|_| ()));
+    let f_server = run_server(opt, &handle);
 
-    let f = join_all(clients)
-        .join(f_tick)
+    let f = timer
+        .timeout(
+            f_client.select(f_server).map_err(|_e| {
+                error!("error on bench");
+                ()
+            }),
+            duration_timeout,
+        )
         .map(|_| ())
-        .or_else(|_e| bail!("error on client"));
+        .or_else(|e| {
+            error!("benchmark finished: {:?}", e);
+            Ok::<(), Error>(())
+        });
 
-    Box::new(f)
+    core.run(f)
 }
 
 #[derive(StructOpt, Debug, Clone)]
