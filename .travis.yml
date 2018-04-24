@@ -1,0 +1,14 @@
+sudo: required
+dist: trusty
+language: rust
+
+matrix:
+  include:
+    - rust: stable
+      env: RUST_BACKTRACE=full
+
+    - rust: nightly
+      env: RUST_BACKTRACE=full
+
+  allow_failures:
+    - rust: nightly
