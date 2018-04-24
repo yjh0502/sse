@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["yjh0502 <yjh0502@gmail.com>"]
 
 description = """
-simple SSE service
+simple SSE server/client
 """
 
 repository = "https://github.com/yjh0502/sse"
