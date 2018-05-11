@@ -60,9 +60,9 @@ impl Stream for SSEBodyStream {
     }
 }
 
-pub struct SSEStream {
+pub struct SSEStream<C: hyper::client::Connect> {
     url: hyper::Uri,
-    client: hyper::Client<hyper::client::HttpConnector>,
+    client: hyper::Client<C>,
     timer: tokio_timer::Timer,
 
     fut_req: Option<Box<Future<Item = hyper::Response, Error = hyper::Error>>>,
@@ -71,15 +71,14 @@ pub struct SSEStream {
     last_event_id: Option<String>,
 }
 
-impl SSEStream {
-    pub fn new(url: hyper::Uri, handle: &Handle) -> Self {
-        let client = hyper::Client::new(handle);
+impl<C: hyper::client::Connect> SSEStream<C> {
+    pub fn new(url: hyper::Uri, client: hyper::Client<C>) -> Self {
         let timer = tokio_timer::wheel()
             .tick_duration(std::time::Duration::from_millis(10))
             .build();
         Self {
             url,
-            client,
+            client: client.clone(),
             timer,
 
             fut_req: None,
@@ -90,7 +89,7 @@ impl SSEStream {
     }
 }
 
-impl Stream for SSEStream {
+impl<C: hyper::client::Connect> Stream for SSEStream<C> {
     type Item = Event;
     type Error = error::Error;
 
