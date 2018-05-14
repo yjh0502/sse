@@ -60,6 +60,14 @@ impl Stream for SSEBodyStream {
     }
 }
 
+lazy_static! {
+    static ref TIMER: tokio_timer::Timer = {
+        tokio_timer::wheel()
+            .tick_duration(std::time::Duration::from_millis(10))
+            .build()
+    };
+}
+
 pub struct SSEStream<C: hyper::client::Connect> {
     url: hyper::Uri,
     client: hyper::Client<C>,
@@ -73,9 +81,7 @@ pub struct SSEStream<C: hyper::client::Connect> {
 
 impl<C: hyper::client::Connect> SSEStream<C> {
     pub fn new(url: hyper::Uri, client: hyper::Client<C>) -> Self {
-        let timer = tokio_timer::wheel()
-            .tick_duration(std::time::Duration::from_millis(10))
-            .build();
+        let timer = TIMER.clone();
         Self {
             url,
             client: client.clone(),
