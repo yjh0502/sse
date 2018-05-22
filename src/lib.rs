@@ -129,13 +129,13 @@ impl Service for EchoService {
 
                 let sender = self.sender.clone();
                 let f = body.map_err(|_e| {
-                    eprintln!("failed to read body: {:?}", _e);
+                    error!("failed to read body: {:?}", _e);
                 }).fold(sender, |sender, chunk| {
                         let bytes: Bytes = chunk.to_vec().into();
                         sender
                             .send(BroadcastRawEvent::Message(bytes))
                             .map_err(|_e| {
-                                eprintln!("failed to send: {:?}", _e);
+                                error!("failed to send: {:?}", _e);
                             })
                     })
                     .map_err(|_e| hyper::error::Error::Method)

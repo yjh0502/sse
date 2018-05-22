@@ -30,7 +30,6 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
         let second = tup.next().ok_or(ParseError::InvalidLine)?;
 
         if first.is_empty() {
-            eprintln!("empty: {}", line);
             return Err(ParseError::Invalid);
         }
 
@@ -38,7 +37,6 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
             "event" => {
                 if !event.event.is_empty() {
                     // should be only one `event` row
-                    eprintln!("event empty");
                     return Err(ParseError::Invalid);
                 }
                 event.event = second.to_owned();
@@ -46,7 +44,6 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
             "id" => {
                 if event.id.is_some() {
                     // should be only one `event` row
-                    eprintln!("id");
                     return Err(ParseError::Invalid);
                 }
                 event.id = Some(second.to_owned());
@@ -62,7 +59,6 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
     }
 
     if event.event.is_empty() {
-        eprintln!("ev empty");
         return Err(ParseError::Invalid);
     }
 
@@ -86,7 +82,6 @@ pub fn parse_sse_chunks(mut s: &[u8]) -> Result<(Vec<Event>, Vec<u8>), ParseErro
         s = &s[(pos + 2)..];
 
         let msg_chunk = std::str::from_utf8(msg_bytes)?;
-        eprintln!("chunk: {}", msg_chunk);
         out.push(parse_sse_chunk(msg_chunk)?);
     }
 
