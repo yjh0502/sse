@@ -1,11 +1,20 @@
+use std;
+
 use client::Event;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ParseError {
+    InvalidUtf8,
     UnknownField,
     InvalidLine,
     Invalid,
     Other,
+}
+
+impl From<std::str::Utf8Error> for ParseError {
+    fn from(_e: std::str::Utf8Error) -> Self {
+        ParseError::InvalidUtf8
+    }
 }
 
 // client
@@ -21,6 +30,7 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
         let second = tup.next().ok_or(ParseError::InvalidLine)?;
 
         if first.is_empty() {
+            eprintln!("empty: {}", line);
             return Err(ParseError::Invalid);
         }
 
@@ -28,6 +38,7 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
             "event" => {
                 if !event.event.is_empty() {
                     // should be only one `event` row
+                    eprintln!("event empty");
                     return Err(ParseError::Invalid);
                 }
                 event.event = second.to_owned();
@@ -35,6 +46,7 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
             "id" => {
                 if event.id.is_some() {
                     // should be only one `event` row
+                    eprintln!("id");
                     return Err(ParseError::Invalid);
                 }
                 event.id = Some(second.to_owned());
@@ -50,6 +62,7 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
     }
 
     if event.event.is_empty() {
+        eprintln!("ev empty");
         return Err(ParseError::Invalid);
     }
 
@@ -59,17 +72,25 @@ fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
     Ok(event)
 }
 
-pub fn parse_sse_chunks(s: &str) -> Result<(Vec<Event>, String), ParseError> {
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+pub fn parse_sse_chunks(mut s: &[u8]) -> Result<(Vec<Event>, Vec<u8>), ParseError> {
     let mut out = Vec::new();
 
-    let mut msgs = s.split("\n\n");
-    let mut msg_chunk = msgs.next().ok_or(ParseError::Other)?;
-    for next_msg_chunk in msgs {
+    while let Some(pos) = find_subsequence(s, b"\n\n") {
+        let msg_bytes = &s[..pos];
+        s = &s[(pos + 2)..];
+
+        let msg_chunk = std::str::from_utf8(msg_bytes)?;
+        eprintln!("chunk: {}", msg_chunk);
         out.push(parse_sse_chunk(msg_chunk)?);
-        msg_chunk = next_msg_chunk;
     }
 
-    Ok((out, msg_chunk.to_owned()))
+    Ok((out, s.to_owned()))
 }
 
 #[cfg(test)]
@@ -149,8 +170,9 @@ event: aa"#;
             },
         ];
 
-        let (ev, remain) = parse_sse_chunks(s).expect("should not fail on parse");
+        let (ev, remain) = parse_sse_chunks(s.as_bytes()).expect("should not fail on parse");
         assert_eq!(expected_ev, ev);
-        assert_eq!("event: aa", remain);
+        let expected: &[u8] = b"event: aa" as &[u8];
+        assert_eq!(expected, remain.as_slice());
     }
 }

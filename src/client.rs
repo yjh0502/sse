@@ -10,14 +10,14 @@ pub struct Event {
 struct SSEBodyStream {
     body: hyper::Body,
     events: Vec<Event>,
-    buf: String,
+    buf: Vec<u8>,
 }
 impl SSEBodyStream {
     fn new(body: hyper::Body) -> Self {
         Self {
             body,
             events: Vec::new(),
-            buf: String::new(),
+            buf: Vec::new(),
         }
     }
 }
@@ -35,15 +35,9 @@ impl Stream for SSEBodyStream {
         match try_ready!(self.body.poll()) {
             None => Ok(Async::Ready(None)),
             Some(chunk) => {
-                let chunk_str = match std::str::from_utf8(&chunk) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        bail!(error::ErrorKind::InvalidUTF8(e));
-                    }
-                };
-                self.buf += chunk_str;
+                self.buf.extend_from_slice(&chunk);
                 //XXX: find better way...
-                self.buf = self.buf.replace("\r\n", "\n");
+                // self.buf = self.buf.replace("\r\n", "\n");
 
                 let (mut events, next_buf) = match parse::parse_sse_chunks(&self.buf) {
                     Ok(tup) => tup,
