@@ -118,7 +118,10 @@ impl<C: hyper::client::Connect> Stream for SSEStream<C> {
                     // fallthrough
                 }
                 Ok(Async::NotReady) => return Ok(Async::NotReady),
-                Ok(Async::Ready(None)) => return Ok(Async::Ready(None)),
+                Ok(Async::Ready(None)) => {
+                    // server drops connection, try to reconnect
+                    // fallthrough
+                }
                 Ok(Async::Ready(Some(ev))) => {
                     if let Some(ref event_id) = ev.id {
                         self.last_event_id = Some(event_id.clone());

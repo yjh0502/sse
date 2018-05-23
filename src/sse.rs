@@ -54,7 +54,9 @@ pub struct Broadcast {
 
     opt: BroadcastFlags,
     clients: Vec<Client>,
+
     messages: Vec<Bytes>,
+    message_offset: usize,
 }
 
 impl Broadcast {
@@ -68,26 +70,37 @@ impl Broadcast {
 
             opt,
             clients: Vec::new(),
+
             messages: Vec::new(),
+            message_offset: 0,
         }
     }
 
-    fn on_client(mut self, mut client: Client) -> BroadcastFuture {
+    fn next_event_id(&self) -> usize {
+        self.message_offset + self.messages.len()
+    }
+
+    fn on_client(mut self, client: Client) -> BroadcastFuture {
         trace!("client {} registered", self.clients.len());
 
         // TODO: move to somewhere else?
         let mut seq = client.seq;
 
         // handle invalid LastEventId
-        if seq >= self.messages.len() || self.opt.contains(BroadcastFlags::NO_LOG) {
-            seq = self.messages.len();
+        let next_event_id = self.next_event_id();
+        if seq >= next_event_id || self.opt.contains(BroadcastFlags::NO_LOG) {
+            seq = next_event_id;
+        }
+        if seq < self.message_offset {
+            seq = self.message_offset;
         }
 
         let mut clients = Vec::new();
         std::mem::swap(&mut self.clients, &mut clients);
 
-        client.seq = self.messages.len();
-        let chunks = self.messages[seq..]
+        // send pending messages
+        let vec_offset = seq - self.message_offset;
+        let chunks = self.messages[vec_offset..]
             .iter()
             .map(|s| Ok(hyper::Chunk::from(s.clone())))
             .collect::<Vec<_>>();
@@ -100,22 +113,14 @@ impl Broadcast {
         let mut clients = Vec::new();
         std::mem::swap(&mut self.clients, &mut clients);
 
-        let seq = self.messages.len();
-        msg.event_id = Some(seq);
-
-        self.messages.push(msg.to_bytes());
-        // seq for incoming message
-        let seq = self.messages.len();
+        msg.event_id = Some(self.next_event_id());
+        let bytes = msg.to_bytes();
+        self.messages.push(bytes.clone());
 
         // bypass borrow checker
         let mut tx = Vec::with_capacity(clients.len());
         for mut c in clients {
-            // clone pending messages
-            let msgs = self.messages[c.seq..seq]
-                .iter()
-                .map(|s| Ok(hyper::Chunk::from(s.clone())))
-                .collect::<Vec<_>>();
-            c.seq = seq;
+            let msgs = vec![Ok(hyper::Chunk::from(bytes.clone()))];
             tx.push((c, msgs));
         }
         self.on_flush(Vec::new(), tx)
@@ -176,6 +181,8 @@ impl Broadcast {
         // drop all connections and message
         // TODO: check if client can receive all messages before disconnecting
         self.clients.clear();
+
+        self.message_offset += self.messages.len();
         self.messages.clear();
         Box::new(ok(self))
     }
