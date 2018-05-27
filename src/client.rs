@@ -12,6 +12,7 @@ struct SSEBodyStream {
     events: Vec<Event>,
     buf: Vec<u8>,
 }
+
 impl SSEBodyStream {
     fn new(body: hyper::Body) -> Self {
         Self {
@@ -27,9 +28,8 @@ impl Stream for SSEBodyStream {
     type Error = error::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        if let Some(ev) = self.events.pop() {
-            task::current().notify();
-            return Ok(Async::Ready(Some(ev)));
+        if !self.events.is_empty() {
+            return Ok(Async::Ready(self.events.pop()));
         }
 
         match try_ready!(self.body.poll()) {
@@ -48,7 +48,12 @@ impl Stream for SSEBodyStream {
                 self.buf = next_buf;
                 events.reverse();
                 self.events = events;
-                self.poll()
+
+                if let Some(ev) = self.events.pop() {
+                    Ok(Async::Ready(Some(ev)))
+                } else {
+                    Ok(Async::NotReady)
+                }
             }
         }
     }
