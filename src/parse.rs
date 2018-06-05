@@ -70,7 +70,7 @@ fn parse_sse_chunk(s: &str) -> Result<Option<Event>, ParseError> {
     Ok(Some(event))
 }
 
-pub fn parse_sse_chunks(s: &[u8]) -> Result<(Vec<Event>, Vec<u8>), ParseError> {
+pub fn parse_sse_chunks(s: Vec<u8>) -> Result<(Vec<Event>, Vec<u8>), ParseError> {
     let mut out = Vec::new();
 
     let mut start_idx = 0;
@@ -86,6 +86,10 @@ pub fn parse_sse_chunks(s: &[u8]) -> Result<(Vec<Event>, Vec<u8>), ParseError> {
         if !line.is_empty() {
             continue;
         }
+        // last chunk without newline
+        if end_idx > s.len() {
+            break;
+        }
 
         let chunk_bytes = &s[start_idx..end_idx];
         start_idx = end_idx;
@@ -94,6 +98,11 @@ pub fn parse_sse_chunks(s: &[u8]) -> Result<(Vec<Event>, Vec<u8>), ParseError> {
         if let Some(chunk) = parse_sse_chunk(chunk_str)? {
             out.push(chunk);
         }
+    }
+
+    if start_idx == 0 {
+        // skip allocation if it fails to parse messages from a buffer
+        return Ok((out, s));
     }
 
     Ok((out, s[start_idx..].to_owned()))
@@ -212,7 +221,7 @@ event: aa"#;
             },
         ];
 
-        let (ev, remain) = parse_sse_chunks(s.as_bytes()).expect("should not fail on parse");
+        let (ev, remain) = parse_sse_chunks(Vec::from(s)).expect("should not fail on parse");
         assert_eq!(expected_ev, ev);
         let expected: &[u8] = b"event: aa" as &[u8];
         assert_eq!(expected, remain.as_slice());

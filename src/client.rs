@@ -36,16 +36,18 @@ impl Stream for SSEBodyStream {
         match try_ready!(self.body.poll()) {
             None => Ok(Async::Ready(None)),
             Some(chunk) => {
-                self.buf.extend_from_slice(&chunk);
-                //XXX: find better way...
-                // self.buf = self.buf.replace("\r\n", "\n");
+                let mut buf = Vec::new();
+                std::mem::swap(&mut buf, &mut self.buf);
 
-                let (mut events, next_buf) = match parse::parse_sse_chunks(&self.buf) {
+                buf.extend_from_slice(&chunk);
+
+                let (mut events, next_buf) = match parse::parse_sse_chunks(buf) {
                     Ok(tup) => tup,
                     Err(e) => {
                         bail!(error::ErrorKind::Protocol(e));
                     }
                 };
+
                 self.buf = next_buf;
                 events.reverse();
                 self.events = events;
