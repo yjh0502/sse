@@ -33,6 +33,8 @@ impl BroadcastMessage {
 #[derive(Debug)]
 pub enum BroadcastEvent {
     NewClient(Client),
+
+    Ping,
     Message(BroadcastMessage),
     EphimeralMessage(BroadcastMessage),
 
@@ -109,33 +111,31 @@ impl Broadcast {
         self.on_flush(clients, tx)
     }
 
-    fn on_msg(mut self, mut msg: BroadcastMessage) -> BroadcastFuture {
-        let mut clients = Vec::new();
-        std::mem::swap(&mut self.clients, &mut clients);
+    fn on_ping(self) -> BroadcastFuture {
+        let bytes = Bytes::from(":ping\n\n");
+        self.broadcast_bytes(bytes)
+    }
 
+    fn on_msg(mut self, mut msg: BroadcastMessage) -> BroadcastFuture {
         msg.event_id = Some(self.next_event_id());
         let bytes = msg.to_bytes();
         self.messages.push(bytes.clone());
 
-        // bypass borrow checker
-        let mut tx = Vec::with_capacity(clients.len());
-        for mut c in clients {
-            let msgs = vec![Ok(hyper::Chunk::from(bytes.clone()))];
-            tx.push((c, msgs));
-        }
-        self.on_flush(Vec::new(), tx)
+        self.broadcast_bytes(msg.to_bytes())
     }
 
-    fn on_ephimeral_msg(mut self, msg: BroadcastMessage) -> BroadcastFuture {
+    fn on_ephimeral_msg(self, msg: BroadcastMessage) -> BroadcastFuture {
+        self.broadcast_bytes(msg.to_bytes())
+    }
+
+    fn broadcast_bytes(mut self, bytes: Bytes) -> BroadcastFuture {
         let mut clients = Vec::new();
         std::mem::swap(&mut self.clients, &mut clients);
 
         let mut tx = Vec::with_capacity(clients.len());
-        let bytes = msg.to_bytes();
         for mut c in clients {
             tx.push((c, vec![Ok(hyper::Chunk::from(bytes.clone()))]));
         }
-
         self.on_flush(Vec::new(), tx)
     }
 
@@ -195,6 +195,7 @@ impl Broadcast {
     pub fn on_event(self, ev: BroadcastEvent) -> BroadcastFuture {
         use self::BroadcastEvent::*;
         match ev {
+            Ping => self.on_ping(),
             Message(msg) => self.on_msg(msg),
             EphimeralMessage(msg) => self.on_ephimeral_msg(msg),
             NewClient(client) => self.on_client(client),
