@@ -52,11 +52,7 @@ impl Stream for SSEBodyStream {
                 events.reverse();
                 self.events = events;
 
-                if let Some(ev) = self.events.pop() {
-                    Ok(Async::Ready(Some(ev)))
-                } else {
-                    Ok(Async::NotReady)
-                }
+                self.poll()
             }
         }
     }
