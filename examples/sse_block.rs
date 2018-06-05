@@ -7,7 +7,7 @@ extern crate tokio_core;
 extern crate tokio_timer;
 
 use std::rc::*;
-use std::time::Duration;
+use std::time::*;
 
 use futures::future::*;
 use futures::*;
@@ -30,18 +30,13 @@ fn server(addr: &str, handle: Handle) -> Box<Future<Item = (), Error = ()>> {
 
     eprintln!("listen: {}", serve.incoming_ref().local_addr());
 
-    let timer = tokio_timer::wheel()
-        .tick_duration(Duration::from_millis(10))
-        .build();
-
     let timer_interval = Duration::from_millis(100);
     let mut event_counter = 0;
 
     let mut rng = rand::thread_rng();
     let body = rng.gen_ascii_chars().take(1024 * 16).collect::<String>();
 
-    let stream_send = timer
-        .interval(timer_interval)
+    let stream_send = tokio_timer::Interval::new(Instant::now(), timer_interval)
         .map_err(|_e| -> () { panic!("timer error") })
         .fold(sender, move |sender, _to| {
             event_counter += 1;

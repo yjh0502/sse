@@ -8,18 +8,12 @@ pub enum BroadcastRawEvent {
 
 type BroadcastRawFuture = Box<Future<Item = BroadcastRaw, Error = ()>>;
 pub struct BroadcastRaw {
-    timer: tokio_timer::Timer,
     clients: Vec<Client>,
 }
 
 impl BroadcastRaw {
     pub fn new() -> Self {
-        let timer = tokio_timer::wheel()
-            .tick_duration(Duration::from_millis(10))
-            .build();
-
         Self {
-            timer,
             clients: Vec::new(),
         }
     }
@@ -46,7 +40,6 @@ impl BroadcastRaw {
         mut clients: Vec<Client>,
         tx: Vec<(Client, Vec<Result<hyper::Chunk, hyper::Error>>)>,
     ) -> BroadcastRawFuture {
-        let timer = self.timer.clone();
         let tx_iter = tx.into_iter().map(move |(c, msgs)| {
             let f = c.sender
                 .clone()
@@ -56,13 +49,12 @@ impl BroadcastRaw {
                 })
                 .map(move |_sender| c);
 
-            timer
-                .timeout(f, Duration::from_millis(FLUSH_DEADLINE_MS))
-                .map_err(|_e| {
-                    // send timeout. actual timeout will happens when hyper internal buffer and TCP
-                    // send buffer is both full.
-                    ()
-                })
+            let deadline = Instant::now() + Duration::from_millis(FLUSH_DEADLINE_MS);
+            tokio_timer::Deadline::new(f, deadline).map_err(|_e| {
+                // send timeout. actual timeout will happens when hyper internal buffer and TCP
+                // send buffer is both full.
+                ()
+            })
         });
 
         let f = futures_unordered(tx_iter)

@@ -62,18 +62,9 @@ impl Stream for SSEBodyStream {
     }
 }
 
-lazy_static! {
-    static ref TIMER: tokio_timer::Timer = {
-        tokio_timer::wheel()
-            .tick_duration(std::time::Duration::from_millis(10))
-            .build()
-    };
-}
-
 pub struct SSEStream<C: hyper::client::Connect> {
     url: hyper::Uri,
     client: hyper::Client<C>,
-    timer: tokio_timer::Timer,
 
     fut_req: Option<Box<Future<Item = hyper::Response, Error = hyper::Error>>>,
     inner: Option<SSEBodyStream>,
@@ -83,11 +74,9 @@ pub struct SSEStream<C: hyper::client::Connect> {
 
 impl<C: hyper::client::Connect> SSEStream<C> {
     pub fn new(url: hyper::Uri, client: hyper::Client<C>) -> Self {
-        let timer = TIMER.clone();
         Self {
             url,
             client: client.clone(),
-            timer,
 
             fut_req: None,
             inner: None,
@@ -152,8 +141,7 @@ impl<C: hyper::client::Connect> Stream for SSEStream<C> {
         }
 
         let client = self.client.clone();
-        let req = self.timer
-            .sleep(std::time::Duration::from_millis(100))
+        let req = tokio_timer::Delay::new(Instant::now() + Duration::from_millis(100))
             .then(move |_| client.request(req));
 
         self.fut_req = Some(Box::new(req));

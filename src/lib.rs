@@ -9,12 +9,10 @@ extern crate futures;
 extern crate hyper;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate lazy_static;
 extern crate tokio_core;
 extern crate tokio_timer;
 
-use std::time::Duration;
+use std::time::*;
 
 use bytes::*;
 use futures::future::*;

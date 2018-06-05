@@ -25,7 +25,6 @@ use hyper::server::Http;
 use hyper::Request;
 use rand::Rng;
 use tokio_core::reactor::*;
-use tokio_timer::Timer;
 
 use sse::*;
 
@@ -113,18 +112,13 @@ fn run_server(opt: &Opt, handle: &Handle) -> Box<Future<Item = (), Error = Error
 
     info!("listen: {}", serve.incoming_ref().local_addr());
 
-    let timer = tokio_timer::wheel()
-        .tick_duration(Duration::from_millis(10))
-        .build();
-
     let timer_interval = Duration::from_millis(1000);
     let mut event_counter = 0;
 
     let mut rng = rand::thread_rng();
     let body = rng.gen_ascii_chars().take(64).collect::<String>();
 
-    let stream_send = timer
-        .interval(timer_interval)
+    let stream_send = tokio_timer::Interval::new(Instant::now(), timer_interval)
         .map_err(|_e| -> () { panic!("timer error") })
         .fold(sender, move |sender, _to| {
             event_counter += 1;
@@ -169,8 +163,7 @@ fn run(opt: &Opt) -> Result<()> {
     let mut core = Core::new().expect("failed to build core");
     let handle = core.handle();
 
-    let timer = Timer::default();
-    let duration_timeout = std::time::Duration::new(opt.duration as u64, 0);
+    let duration_timeout = Duration::from_secs(opt.duration as u64);
 
     let num_threads = opt.threads;
     let pool = CpuPool::new(num_threads);
@@ -204,8 +197,7 @@ fn run(opt: &Opt) -> Result<()> {
 
     let tick_interval = std::time::Duration::new(1, 0);
     let counter_tick = counter.clone();
-    let f_tick = timer
-        .interval(tick_interval)
+    let f_tick = tokio_timer::Interval::new(Instant::now(), tick_interval)
         .map_err(|_e| panic!("Failed to set tick"))
         .fold((counter_tick, 0), |(counter, prev), _| {
             let count: usize = counter.count.load(atomic::Ordering::SeqCst);
@@ -214,20 +206,17 @@ fn run(opt: &Opt) -> Result<()> {
         })
         .into_future();
 
-    let f_client = timer
-        .sleep(Duration::from_secs(1))
+    let f_client = tokio_timer::Delay::new(Instant::now() + Duration::from_secs(1))
         .then(|_| join_all(f_clients).join(f_tick).map(|_| ()));
     let f_server = run_server(opt, &handle);
 
-    let f = timer
-        .timeout(
-            f_client.select(f_server).map_err(|_e| {
-                error!("error on bench");
-                ()
-            }),
-            duration_timeout,
-        )
-        .map(|_| ())
+    let f = tokio_timer::Deadline::new(
+        f_client.select(f_server).map_err(|_e| {
+            error!("error on bench");
+            ()
+        }),
+        Instant::now() + duration_timeout,
+    ).map(|_| ())
         .or_else(|e| {
             error!("benchmark finished: {:?}", e);
             Ok::<(), Error>(())

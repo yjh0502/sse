@@ -5,6 +5,8 @@ extern crate sse;
 extern crate tokio_core;
 extern crate tokio_timer;
 
+use std::time::*;
+
 use futures::future::*;
 use futures::{Future, Sink, Stream};
 use hyper::server::{Http, Request, Response, Service};
@@ -56,13 +58,11 @@ fn main() {
 
     eprintln!("listen: {}", serve.incoming_ref().local_addr());
 
-    let timer = tokio_timer::Timer::default();
-    let timer_interval = std::time::Duration::new(1, 0);
+    let timer_interval = Duration::from_secs(1);
 
     let start_time = std::time::Instant::now();
     let mut event_counter = 0;
-    let stream_send = timer
-        .interval(timer_interval)
+    let stream_send = tokio_timer::Interval::new(Instant::now(), timer_interval)
         .map_err(|_e| {
             eprintln!("timer error");
             ()

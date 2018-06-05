@@ -52,8 +52,6 @@ bitflags! {
 
 type BroadcastFuture = Box<Future<Item = Broadcast, Error = ()>>;
 pub struct Broadcast {
-    timer: tokio_timer::Timer,
-
     opt: BroadcastFlags,
     clients: Vec<Client>,
 
@@ -63,13 +61,7 @@ pub struct Broadcast {
 
 impl Broadcast {
     pub fn new(opt: BroadcastFlags) -> Self {
-        let timer = tokio_timer::wheel()
-            .tick_duration(Duration::from_millis(10))
-            .build();
-
         Self {
-            timer,
-
             opt,
             clients: Vec::new(),
 
@@ -144,7 +136,6 @@ impl Broadcast {
         mut clients: Vec<Client>,
         tx: Vec<(Client, Vec<Result<hyper::Chunk, hyper::Error>>)>,
     ) -> BroadcastFuture {
-        let timer = self.timer.clone();
         let tx_iter = tx.into_iter().map(move |(c, msgs)| {
             let f = c.sender
                 .clone()
@@ -154,13 +145,12 @@ impl Broadcast {
                 })
                 .map(move |_sender| c);
 
-            timer
-                .timeout(f, Duration::from_millis(FLUSH_DEADLINE_MS))
-                .map_err(|_e| {
-                    // send timeout. actual timeout will happens when hyper internal buffer and TCP
-                    // send buffer is both full.
-                    ()
-                })
+            let deadline = Instant::now() + Duration::from_millis(FLUSH_DEADLINE_MS);
+            tokio_timer::Deadline::new(f, deadline).map_err(|_e| {
+                // send timeout. actual timeout will happens when hyper internal buffer and TCP
+                // send buffer is both full.
+                ()
+            })
         });
 
         let f = futures_unordered(tx_iter)
