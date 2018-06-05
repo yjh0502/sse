@@ -29,6 +29,7 @@ impl Stream for SSEBodyStream {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         if !self.events.is_empty() {
+            task::current().notify();
             return Ok(Async::Ready(self.events.pop()));
         }
 

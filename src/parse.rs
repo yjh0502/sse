@@ -5,10 +5,7 @@ use client::Event;
 #[derive(PartialEq, Eq, Debug)]
 pub enum ParseError {
     InvalidUtf8,
-    UnknownField,
     InvalidLine,
-    Invalid,
-    Other,
 }
 
 impl From<std::str::Utf8Error> for ParseError {
@@ -17,75 +14,89 @@ impl From<std::str::Utf8Error> for ParseError {
     }
 }
 
-// client
-fn parse_sse_chunk(s: &str) -> Result<Event, ParseError> {
+fn parse_sse_chunk(s: &str) -> Result<Option<Event>, ParseError> {
     let mut event = Event::default();
-    for line in s.split('\n') {
-        if line.is_empty() {
-            continue;
+
+    for mut line in s.split('\n') {
+        {
+            let len = line.len();
+            if len > 0 && line.as_bytes()[len - 1] == b'\r' {
+                // remote '\r'
+                line = &line[..len - 1];
+            }
         }
 
-        let mut tup = line.splitn(2, ": ");
-        let first = tup.next().ok_or(ParseError::InvalidLine)?;
-        let second = tup.next().ok_or(ParseError::InvalidLine)?;
-
-        if first.is_empty() {
-            return Err(ParseError::Invalid);
+        let mut tup = line.splitn(2, ':');
+        // should not be reached because chunk should not contain an empty line
+        let key = tup.next().ok_or(ParseError::InvalidLine)?;
+        // if there's no colon, a string will be a key without value
+        let mut val = tup.next().unwrap_or("");
+        if val.len() > 0 && val.as_bytes()[0] == b' ' {
+            // skip space character after colon
+            val = &val[1..];
         }
 
-        match first {
+        match key {
+            "" => {
+                // starts with colon, skipping
+                continue;
+            }
             "event" => {
-                if !event.event.is_empty() {
-                    // should be only one `event` row
-                    return Err(ParseError::Invalid);
-                }
-                event.event = second.to_owned();
+                // use latest 'event' value
+                event.event = val.to_owned();
             }
             "id" => {
-                if event.id.is_some() {
-                    // should be only one `event` row
-                    return Err(ParseError::Invalid);
-                }
-                event.id = Some(second.to_owned());
+                // use latest 'id' value
+                event.id = Some(val.to_owned());
             }
             "data" => {
-                event.data += second;
+                event.data += val;
                 event.data += "\n";
             }
             _ => {
-                return Err(ParseError::UnknownField);
+                // ignore unknown fields
+                continue;
             }
         }
-    }
-
-    if event.event.is_empty() {
-        return Err(ParseError::Invalid);
     }
 
     // remove last LINE FEED
     event.data.pop();
 
-    Ok(event)
-}
-
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-pub fn parse_sse_chunks(mut s: &[u8]) -> Result<(Vec<Event>, Vec<u8>), ParseError> {
-    let mut out = Vec::new();
-
-    while let Some(pos) = find_subsequence(s, b"\n\n") {
-        let msg_bytes = &s[..pos];
-        s = &s[(pos + 2)..];
-
-        let msg_chunk = std::str::from_utf8(msg_bytes)?;
-        out.push(parse_sse_chunk(msg_chunk)?);
+    if event.data.is_empty() {
+        return Ok(None);
     }
 
-    Ok((out, s.to_owned()))
+    Ok(Some(event))
+}
+
+pub fn parse_sse_chunks(s: &[u8]) -> Result<(Vec<Event>, Vec<u8>), ParseError> {
+    let mut out = Vec::new();
+
+    let mut start_idx = 0;
+    let mut end_idx = 0;
+    for mut line in s.split(|b| *b == b'\n') {
+        end_idx += line.len() + 1;
+
+        let len = line.len();
+        if len > 0 && line[len - 1] == b'\r' {
+            line = &line[..len - 1];
+        }
+
+        if !line.is_empty() {
+            continue;
+        }
+
+        let chunk_bytes = &s[start_idx..end_idx];
+        start_idx = end_idx;
+
+        let chunk_str = std::str::from_utf8(chunk_bytes)?;
+        if let Some(chunk) = parse_sse_chunk(chunk_str)? {
+            out.push(chunk);
+        }
+    }
+
+    Ok((out, s[start_idx..].to_owned()))
 }
 
 #[cfg(test)]
@@ -105,7 +116,7 @@ id: 100
             data: "test".to_owned(),
         };
 
-        assert_eq!(Ok(ev), parse_sse_chunk(s));
+        assert_eq!(Ok(Some(ev)), parse_sse_chunk(s));
     }
 
     #[test]
@@ -122,7 +133,7 @@ data: }
             data: "{\n\"foo\":\"bar\"\n}".to_owned(),
         };
 
-        assert_eq!(Ok(ev), parse_sse_chunk(s));
+        assert_eq!(Ok(Some(ev)), parse_sse_chunk(s));
     }
 
     #[test]
@@ -131,7 +142,11 @@ data: }
 data: test
 event: bar
 "#;
-        assert!(parse_sse_chunk(s).is_err());
+        let ev = parse_sse_chunk(s)
+            .expect("should not fail on parse")
+            .expect("should not be None");
+        assert_eq!(ev.event, "bar");
+        assert_eq!(ev.data, "test");
     }
 
     #[test]
@@ -139,7 +154,37 @@ event: bar
         let s = r#"event: foo
 data:
 "#;
-        assert!(parse_sse_chunk(s).is_err());
+        assert_eq!(Ok(None), parse_sse_chunk(s));
+    }
+
+    #[test]
+    fn test_data_no_event() {
+        let s = r#"data:foo
+"#;
+        let parsed = parse_sse_chunk(s)
+            .expect("should not fail on parse")
+            .expect("should not be None");
+        assert_eq!(parsed.event, "");
+        assert_eq!(parsed.data, "foo");
+    }
+
+    #[test]
+    fn test_data_emptyline() {
+        let s = r#"data
+data
+"#;
+        let parsed = parse_sse_chunk(s)
+            .expect("should not fail on parse")
+            .expect("should not be None");
+        assert_eq!(parsed.event, "");
+        assert_eq!(parsed.data, "\n");
+    }
+
+    #[test]
+    fn test_ping() {
+        let s = ":ping";
+        let parsed = parse_sse_chunk(s).expect("should not fail on parse");
+        assert!(parsed.is_none());
     }
 
     #[test]
@@ -149,6 +194,8 @@ data: test
 
 event: bar
 data: test2
+
+:ping
 
 event: aa"#;
 
