@@ -60,13 +60,13 @@ pub struct Broadcast {
 }
 
 impl Broadcast {
-    pub fn new(opt: BroadcastFlags) -> Self {
+    pub fn new(initial_event_id: usize, opt: BroadcastFlags) -> Self {
         Self {
             opt,
             clients: Vec::new(),
 
             messages: Vec::new(),
-            message_offset: 0,
+            message_offset: initial_event_id,
         }
     }
 
