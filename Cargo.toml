@@ -1,6 +1,6 @@
 [package]
 name = "sse"
-version = "0.1.9"
+version = "0.1.10"
 authors = ["yjh0502 <yjh0502@gmail.com>"]
 
 description = """
@@ -19,9 +19,8 @@ travis-ci = { repository = "yjh0502/sse" }
 [dependencies]
 bitflags = "1"
 bytes = "0.4"
-error-chain = "0.11"
+error-chain = "0.12"
 futures = "0.1"
-futures-cpupool = "0.1"
 hyper = "0.11"
 log = "0.4"
 tokio-core = "0.1.17"
@@ -29,6 +28,7 @@ tokio-timer = "0.2"
 
 [dev-dependencies]
 env_logger = "0.5"
+futures-cpupool = "0.1"
 rand = "0.4"
 structopt = "0.2"
 structopt-derive = "0.2"
