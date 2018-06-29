@@ -39,6 +39,7 @@ pub enum BroadcastEvent {
     EphimeralMessage(BroadcastMessage),
 
     Reset,
+    ResetEventId(usize),
     DebugDisconnect,
 
     Inspect(unsync::oneshot::Sender<usize>),
@@ -60,13 +61,13 @@ pub struct Broadcast {
 }
 
 impl Broadcast {
-    pub fn new(initial_event_id: usize, opt: BroadcastFlags) -> Self {
+    pub fn new(opt: BroadcastFlags) -> Self {
         Self {
             opt,
             clients: Vec::new(),
 
             messages: Vec::new(),
-            message_offset: initial_event_id,
+            message_offset: 0,
         }
     }
 
@@ -177,6 +178,12 @@ impl Broadcast {
         Box::new(ok(self))
     }
 
+    fn on_reset_event_id(mut self, event_id: usize) -> BroadcastFuture {
+        self.message_offset = event_id;
+        self.messages.clear();
+        Box::new(ok(self))
+    }
+
     fn on_debug_disconnect(mut self) -> BroadcastFuture {
         self.clients.clear();
         Box::new(ok(self))
@@ -190,6 +197,7 @@ impl Broadcast {
             EphimeralMessage(msg) => self.on_ephimeral_msg(msg),
             NewClient(client) => self.on_client(client),
             Reset => self.on_reset(),
+            ResetEventId(event_id) => self.on_reset_event_id(event_id),
             DebugDisconnect => self.on_debug_disconnect(),
 
             Inspect(sender) => {

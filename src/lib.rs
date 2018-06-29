@@ -190,14 +190,6 @@ impl EventService {
 
     /// (service, msg sender) pair
     pub fn pair_sse(handle: &Handle, opt: BroadcastFlags) -> (Self, mpsc::Sender<BroadcastEvent>) {
-        Self::pair_sse_event_id(handle, 0, opt)
-    }
-
-    pub fn pair_sse_event_id(
-        handle: &Handle,
-        initial_event_id: usize,
-        opt: BroadcastFlags,
-    ) -> (Self, mpsc::Sender<BroadcastEvent>) {
         let headers = {
             let mut headers = Headers::new();
             headers.set(ContentType(mime::TEXT_EVENT_STREAM));
@@ -217,7 +209,7 @@ impl EventService {
                 ()
             });
 
-        let broadcast = Broadcast::new(initial_event_id, opt);
+        let broadcast = Broadcast::new(opt);
         let broker = receiver
             .select(stream_rx)
             .fold(broadcast, Broadcast::on_event)
