@@ -42,7 +42,7 @@ pub enum BroadcastEvent {
     ResetEventId(usize),
     DebugDisconnect,
 
-    Inspect(unsync::oneshot::Sender<usize>),
+    Inspect(sync::oneshot::Sender<usize>),
 }
 
 bitflags! {
@@ -51,7 +51,7 @@ bitflags! {
     }
 }
 
-type BroadcastFuture = Box<Future<Item = Broadcast, Error = ()>>;
+type BroadcastFuture = Box<Future<Item = Broadcast, Error = ()> + Send>;
 pub struct Broadcast {
     opt: BroadcastFlags,
     clients: Vec<Client>,
@@ -97,7 +97,7 @@ impl Broadcast {
         let vec_offset = seq - self.message_offset;
         let chunks = self.messages[vec_offset..]
             .iter()
-            .map(|s| Ok(hyper::Chunk::from(s.clone())))
+            .map(|s| hyper::Chunk::from(s.clone()))
             .collect::<Vec<_>>();
 
         let tx = vec![(client, chunks)];
@@ -127,7 +127,7 @@ impl Broadcast {
 
         let mut tx = Vec::with_capacity(clients.len());
         for mut c in clients {
-            tx.push((c, vec![Ok(hyper::Chunk::from(bytes.clone()))]));
+            tx.push((c, vec![hyper::Chunk::from(bytes.clone())]));
         }
         self.on_flush(Vec::new(), tx)
     }
@@ -135,10 +135,11 @@ impl Broadcast {
     fn on_flush(
         mut self,
         mut clients: Vec<Client>,
-        tx: Vec<(Client, Vec<Result<hyper::Chunk, hyper::Error>>)>,
+        tx: Vec<(Client, Vec<hyper::Chunk>)>,
     ) -> BroadcastFuture {
         let tx_iter = tx.into_iter().map(move |(c, msgs)| {
-            let f = c.sender
+            let f = c
+                .sender
                 .clone()
                 .send_all(iter_ok(msgs))
                 .map_err(|_e| {
@@ -146,8 +147,7 @@ impl Broadcast {
                 })
                 .map(move |_sender| c);
 
-            let deadline = Instant::now() + Duration::from_millis(FLUSH_DEADLINE_MS);
-            tokio_timer::Deadline::new(f, deadline).map_err(|_e| {
+            tokio_timer::Timeout::new(f, Duration::from_millis(FLUSH_DEADLINE_MS)).map_err(|_e| {
                 // send timeout. actual timeout will happens when hyper internal buffer and TCP
                 // send buffer is both full.
                 ()

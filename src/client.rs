@@ -1,4 +1,5 @@
 use super::*;
+use hyper::client::connect::Connect;
 
 #[derive(Default, PartialEq, Eq, Debug)]
 pub struct Event {
@@ -58,17 +59,17 @@ impl Stream for SSEBodyStream {
     }
 }
 
-pub struct SSEStream<C: hyper::client::Connect> {
+pub struct SSEStream<C: Connect + 'static> {
     url: hyper::Uri,
     client: hyper::Client<C>,
 
-    fut_req: Option<Box<Future<Item = hyper::Response, Error = hyper::Error>>>,
+    fut_req: Option<Box<Future<Item = Response<Body>, Error = hyper::Error>>>,
     inner: Option<SSEBodyStream>,
 
     last_event_id: Option<String>,
 }
 
-impl<C: hyper::client::Connect> SSEStream<C> {
+impl<C: Connect + 'static> SSEStream<C> {
     pub fn new(url: hyper::Uri, client: hyper::Client<C>) -> Self {
         Self {
             url,
@@ -82,7 +83,7 @@ impl<C: hyper::client::Connect> SSEStream<C> {
     }
 }
 
-impl<C: hyper::client::Connect> Stream for SSEStream<C> {
+impl<C: Connect + 'static> Stream for SSEStream<C> {
     type Item = Event;
     type Error = error::Error;
 
@@ -90,7 +91,10 @@ impl<C: hyper::client::Connect> Stream for SSEStream<C> {
         if let Some(mut fut_req) = self.fut_req.take() {
             match fut_req.poll() {
                 Err(_e) => {
-                    error!("failed to connect, retry: {:?}", _e);
+                    error!(
+                        "failed to connect, retry: uri=`{}` error=`{:?}`",
+                        self.url, _e
+                    );
                     // fallthrough
                 }
                 Ok(Async::NotReady) => {
@@ -99,7 +103,7 @@ impl<C: hyper::client::Connect> Stream for SSEStream<C> {
                 }
                 Ok(Async::Ready(resp)) => {
                     info!("sse stream connected: {}", self.url);
-                    self.inner = Some(SSEBodyStream::new(resp.body()));
+                    self.inner = Some(SSEBodyStream::new(resp.into_body()));
                 }
             }
         }
@@ -128,13 +132,13 @@ impl<C: hyper::client::Connect> Stream for SSEStream<C> {
         // retry case
         self.inner = None;
         info!("trying to connect: {}", self.url);
-        let mut req = Request::new(hyper::Method::Get, self.url.clone());
 
-        // set LastEventId
+        let mut builder = Request::builder();
+        builder.method(hyper::Method::GET).uri(self.url.clone());
         if let Some(ref last_event_id) = self.last_event_id {
-            let headers = req.headers_mut();
-            headers.set(LastEventId(last_event_id.clone()));
+            builder.header("last-event-id", last_event_id.to_string());
         }
+        let req = builder.body(Body::empty())?;
 
         let client = self.client.clone();
         let req = tokio_timer::Delay::new(Instant::now() + Duration::from_millis(100))

@@ -3,32 +3,26 @@ extern crate futures;
 extern crate hyper;
 extern crate rand;
 extern crate sse;
-extern crate tokio_core;
+extern crate tokio;
 extern crate tokio_timer;
 
-use std::rc::*;
 use std::time::*;
 
 use futures::future::*;
 use futures::*;
-use hyper::server::Http;
 use rand::Rng;
-use tokio_core::reactor::*;
 
 use sse::*;
 
-fn server(addr: &str, handle: Handle) -> Box<Future<Item = (), Error = ()>> {
+fn server(addr: &str) -> Box<Future<Item = (), Error = ()> + Send> {
     let addr = addr.parse().expect("addres parsing failed");
 
-    let (serv, sender) = EventService::pair_sse(&handle, BroadcastFlags::empty());
-    let serv = Rc::new(serv);
+    let (serv, sender) = EventService::pair_sse(BroadcastFlags::empty());
 
-    let serve = Http::new()
-        .max_buf_size(1024 * 16)
-        .serve_addr_handle(&addr, &handle, move || Ok(serv.clone()))
-        .expect("unable to create server");
-
-    eprintln!("listen: {}", serve.incoming_ref().local_addr());
+    let f_server = hyper::server::Server::bind(&addr)
+        .serve(move || Ok::<_, hyper::Error>(serv.clone()))
+        .map(|_| ())
+        .map_err(|e| eprintln!("failed to serve: {:?}", e));
 
     let timer_interval = Duration::from_millis(100);
     let mut event_counter = 0;
@@ -43,25 +37,9 @@ fn server(addr: &str, handle: Handle) -> Box<Future<Item = (), Error = ()>> {
             let msg = BroadcastMessage::new("tick", body.clone());
             sender.send(BroadcastEvent::Message(msg)).map_err(|_e| ())
         })
-        .map(|_s| -> () { panic!("tick end") });
+        .map(|_s| eprintln!("tick end"));
 
-    let f_listen = serve
-        .for_each(move |conn| {
-            handle.spawn(
-                conn.map(|_| ())
-                    .map_err(|err| eprintln!("serve error: {:?}", err)),
-            );
-            Ok(())
-        })
-        .into_future()
-        .map_err(|_e| {
-            eprintln!("failed to listen: {:?}", _e);
-        });
-
-    let f = stream_send.select(f_listen).then(|_| {
-        eprintln!("server exit");
-        ok::<(), ()>(())
-    });
+    let f = f_server.select(stream_send).then(|_| Ok(()));
     Box::new(f)
 }
 
@@ -69,31 +47,5 @@ fn main() {
     env_logger::init();
     let addr = "127.0.0.1:18080";
 
-    let mut core = tokio_core::reactor::Core::new().expect("failed to build core");
-    let handle = core.handle();
-
-    let f_server = server(addr, handle.clone());
-
-    core.run(f_server).unwrap();
-
-    /*
-    let client_url_str = format!("http://{}/", addr);
-    let client_url = client_url_str
-        .parse::<hyper::Uri>()
-        .expect("failed to parse uri");
-
-    let client = SSEStream::new(client_url, &handle);
-    let timer = tokio_timer::Timer::default();
-    let f_client = client
-        .map_err(|_e| -> () { panic!("error on client: {:?}", _e) })
-        .fold((), move |s, msg| {
-            timer.sleep(Duration::from_millis(1000)).then(move |_| {
-                eprintln!("msg: {:?}", msg.id);
-                ok::<_, ()>(s)
-            })
-        });
-
-    core.run(f_server.join(f_client))
-        .expect("unable to run server");
-        */
+    tokio::run(server(addr));
 }

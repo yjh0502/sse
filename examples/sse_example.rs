@@ -2,15 +2,15 @@ extern crate env_logger;
 extern crate futures;
 extern crate hyper;
 extern crate sse;
-extern crate tokio_core;
+extern crate tokio;
 extern crate tokio_timer;
 
 use std::time::*;
 
 use futures::future::*;
 use futures::{Future, Sink, Stream};
-use hyper::server::{Http, Request, Response, Service};
-use hyper::{Get, StatusCode};
+use hyper::service::Service;
+use hyper::{Body, Method, Request, Response, StatusCode};
 use sse::*;
 
 struct Server {
@@ -18,27 +18,31 @@ struct Server {
 }
 
 impl Service for Server {
-    type Request = Request;
-    type Response = Response;
+    type ReqBody = Body;
+    type ResBody = Body;
     type Error = hyper::Error;
-    type Future = Box<Future<Item = Response, Error = Self::Error>>;
+    type Future = Box<Future<Item = Response<Body>, Error = Self::Error> + Send>;
 
-    fn call(&self, req: Request) -> Self::Future {
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
         let method = req.method().clone();
         let uri = req.uri().clone();
         match (method, uri.path()) {
-            (Get, "/events") => self.serv.call(req),
+            (Method::GET, "/events") => self.serv.call(req),
 
-            (Get, "/") => {
+            (Method::GET, "/") => {
                 eprintln!("request html");
-                Box::new(ok(Response::new()
-                    .with_status(StatusCode::Ok)
-                    .with_body(HTML)))
+                Box::new(ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Body::from(HTML))
+                    .unwrap()))
             }
 
             (method, path) => {
                 eprintln!("invalid request method: {:?}, path: {:?}", method, path);
-                Box::new(ok(Response::new().with_status(StatusCode::NotFound)))
+                Box::new(ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::empty())
+                    .unwrap()))
             }
         }
     }
@@ -48,15 +52,12 @@ fn main() {
     env_logger::init();
     let addr = "0.0.0.0:8001".parse().expect("addres parsing failed");
 
-    let mut core = tokio_core::reactor::Core::new().expect("failed to build core");
-    let handle = core.handle();
+    let (serv, sender) = EventService::pair_sse(BroadcastFlags::empty());
 
-    let (serv, sender) = EventService::pair_sse(&handle, BroadcastFlags::empty());
-    let serve = Http::new()
-        .serve_addr_handle(&addr, &handle, move || Ok(Server { serv: serv.clone() }))
-        .expect("unable to create server");
-
-    eprintln!("listen: {}", serve.incoming_ref().local_addr());
+    let f_server = hyper::server::Server::bind(&addr)
+        .serve(move || Ok::<_, hyper::Error>(Server { serv: serv.clone() }))
+        .map(|_| ())
+        .map_err(|e| eprintln!("failed to serve: {:?}", e));
 
     let timer_interval = Duration::from_secs(1);
 
@@ -82,22 +83,7 @@ fn main() {
             ()
         });
 
-    let h2 = core.handle().clone();
-    let f_listen = serve
-        .for_each(move |conn| {
-            h2.spawn(
-                conn.map(|_| ())
-                    .map_err(|err| eprintln!("serve error: {:?}", err)),
-            );
-            Ok(())
-        })
-        .into_future()
-        .map_err(|_e| {
-            eprintln!("failed to listen: {:?}", _e);
-        });
-
-    core.run(f_listen.join(stream_send))
-        .expect("unable to run server");
+    tokio::run(f_server.join(stream_send).then(|_| Ok(())));
 }
 
 static HTML:&str = r#"<!DOCTYPE html>

@@ -6,7 +6,7 @@ pub enum BroadcastRawEvent {
     Message(Bytes),
 }
 
-type BroadcastRawFuture = Box<Future<Item = BroadcastRaw, Error = ()>>;
+type BroadcastRawFuture = Box<Future<Item = BroadcastRaw, Error = ()> + Send>;
 pub struct BroadcastRaw {
     clients: Vec<Client>,
 }
@@ -29,7 +29,7 @@ impl BroadcastRaw {
 
         let mut tx = Vec::with_capacity(clients.len());
         for mut c in clients {
-            tx.push((c, vec![Ok(hyper::Chunk::from(bytes.clone()))]));
+            tx.push((c, vec![hyper::Chunk::from(bytes.clone())]));
         }
 
         self.on_flush(Vec::new(), tx)
@@ -38,10 +38,11 @@ impl BroadcastRaw {
     fn on_flush(
         mut self,
         mut clients: Vec<Client>,
-        tx: Vec<(Client, Vec<Result<hyper::Chunk, hyper::Error>>)>,
+        tx: Vec<(Client, Vec<hyper::Chunk>)>,
     ) -> BroadcastRawFuture {
         let tx_iter = tx.into_iter().map(move |(c, msgs)| {
-            let f = c.sender
+            let f = c
+                .sender
                 .clone()
                 .send_all(iter_ok(msgs))
                 .map_err(|_e| {
@@ -49,8 +50,7 @@ impl BroadcastRaw {
                 })
                 .map(move |_sender| c);
 
-            let deadline = Instant::now() + Duration::from_millis(FLUSH_DEADLINE_MS);
-            tokio_timer::Deadline::new(f, deadline).map_err(|_e| {
+            tokio_timer::Timeout::new(f, Duration::from_millis(FLUSH_DEADLINE_MS)).map_err(|_e| {
                 // send timeout. actual timeout will happens when hyper internal buffer and TCP
                 // send buffer is both full.
                 ()

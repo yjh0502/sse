@@ -8,23 +8,18 @@ extern crate hyper;
 extern crate structopt;
 #[macro_use]
 extern crate structopt_derive;
-extern crate futures_cpupool;
 extern crate rand;
 extern crate sse;
-extern crate tokio_core;
+extern crate tokio;
 extern crate tokio_timer;
 
-use std::rc::Rc;
 use std::sync::{atomic, Arc};
 use std::time::*;
 
 use futures::future::*;
 use futures::*;
-use futures_cpupool::CpuPool;
-use hyper::server::Http;
-use hyper::Request;
+use hyper::{Body, Request};
 use rand::Rng;
-use tokio_core::reactor::*;
 
 use sse::*;
 
@@ -57,7 +52,7 @@ struct Counter {
 
 fn spawn_client(
     client: &hyper::Client<hyper::client::HttpConnector>,
-    req: Request,
+    req: Request<Body>,
     counter: Counter,
 ) -> impl Future<Item = (), Error = ()> {
     let f = client
@@ -66,7 +61,7 @@ fn spawn_client(
             panic!("failed to connect: {:?}", e);
         })
         .and_then(move |res| {
-            res.body()
+            res.into_body()
                 .map_err(|e| -> () {
                     panic!("failed to read body: {:?}", e);
                 })
@@ -85,32 +80,34 @@ fn run_client(
     url: hyper::Uri,
     count: usize,
     counter: Counter,
-) -> impl Future<Item = (), Error = Error> {
+) -> Box<Future<Item = (), Error = Error> + Send> {
     let clients = (0..count)
         .map(|_n| {
-            let req = Request::new(hyper::Method::Get, url.clone());
+            let req = Request::builder()
+                .method(hyper::Method::GET)
+                .uri(url.clone())
+                .body(Body::empty())
+                .unwrap();
             spawn_client(&client, req, counter.clone())
         })
         .collect::<Vec<_>>();
 
-    join_all(clients)
+    let f = join_all(clients)
         .map(|_| ())
-        .or_else(|_e| bail!("error on client"))
+        .or_else(|_e| bail!("error on client"));
+    Box::new(f)
 }
 
-fn run_server(opt: &Opt, handle: &Handle) -> Box<Future<Item = (), Error = Error>> {
+fn run_server(opt: &Opt) -> Box<Future<Item = (), Error = Error> + Send> {
     let addr_str = format!("0.0.0.0:{}", opt.port);
     let addr = addr_str.parse().expect("addres parsing failed");
 
-    let (serv, sender) = EventService::pair_sse(handle, BroadcastFlags::empty());
-    let serv = Rc::new(serv);
+    let (serv, sender) = EventService::pair_sse(BroadcastFlags::empty());
 
-    let serve = Http::new()
-        .max_buf_size(1024 * 16)
-        .serve_addr_handle(&addr, handle, move || Ok(serv.clone()))
-        .expect("unable to create server");
-
-    info!("listen: {}", serve.incoming_ref().local_addr());
+    let f_server = hyper::server::Server::bind(&addr)
+        .serve(move || Ok::<_, hyper::Error>(serv.clone()))
+        .map(|_| ())
+        .map_err(|e| eprintln!("failed to serve: {:?}", e));
 
     let timer_interval = Duration::from_millis(1000);
     let mut event_counter = 0;
@@ -127,21 +124,7 @@ fn run_server(opt: &Opt, handle: &Handle) -> Box<Future<Item = (), Error = Error
         })
         .map(|_s| -> () { panic!("tick end") });
 
-    let handle = handle.clone();
-    let f_listen = serve
-        .for_each(move |conn| {
-            handle.spawn(
-                conn.map(|_| ())
-                    .map_err(|err| error!("serve error: {:?}", err)),
-            );
-            Ok(())
-        })
-        .into_future()
-        .map_err(|_e| {
-            error!("failed to listen: {:?}", _e);
-        });
-
-    let f = stream_send.select(f_listen).then(|_| {
+    let f = stream_send.select(f_server).then(|_| {
         error!("server exit");
         ok::<(), _>(())
     });
@@ -160,15 +143,11 @@ fn rand_localhost() -> String {
 }
 
 fn run(opt: &Opt) -> Result<()> {
-    let mut core = Core::new().expect("failed to build core");
-    let handle = core.handle();
+    // let mut core = Core::new().expect("failed to build core");
 
     let duration_timeout = Duration::from_secs(opt.duration as u64);
 
     let num_threads = opt.threads;
-    let pool = CpuPool::new(num_threads);
-
-    let mut f_clients = Vec::with_capacity(num_threads);
     let counter = Counter {
         count: Arc::new(Default::default()),
     };
@@ -180,19 +159,14 @@ fn run(opt: &Opt) -> Result<()> {
         let connections = opt.connections / num_threads;
 
         let counter = counter.clone();
-        let f_client = pool.spawn_fn(move || {
-            let mut core = Core::new().expect("failed to build core");
-            let handle = core.handle();
-            let client = hyper::Client::configure()
-                .connector(hyper::client::HttpConnector::new_with_executor(
-                    NullExecutor,
-                    &handle,
-                ))
-                .build(&handle);
 
-            core.run(run_client(client, url, connections, counter))
-        });
-        f_clients.push(f_client);
+        let client = hyper::Client::builder().build(
+            hyper::client::HttpConnector::new_with_executor(NullExecutor, None),
+        );
+        tokio::spawn(
+            run_client(client, url, connections, counter)
+                .map_err(|e| eprintln!("error on client: {:?}", e)),
+        );
     }
 
     let tick_interval = std::time::Duration::new(1, 0);
@@ -202,27 +176,22 @@ fn run(opt: &Opt) -> Result<()> {
         .fold((counter_tick, 0), |(counter, prev), _| {
             let count: usize = counter.count.load(atomic::Ordering::SeqCst);
             info!("count: {:?}, {} tps", counter.count, count - prev);
-            Ok::<_, Error>((counter, count))
+            Ok((counter, count))
         })
+        .map(|_| ())
         .into_future();
 
     let f_client = tokio_timer::Delay::new(Instant::now() + Duration::from_secs(1))
-        .then(|_| join_all(f_clients).join(f_tick).map(|_| ()));
-    let f_server = run_server(opt, &handle);
+        .then(move |_| f_tick)
+        .map_err(|_e| error!("error on client"));
+    let f_server = run_server(opt).map_err(|_e| error!("error on server"));
 
-    let f = tokio_timer::Deadline::new(
-        f_client.select(f_server).map_err(|_e| {
-            error!("error on bench");
-            ()
-        }),
-        Instant::now() + duration_timeout,
-    ).map(|_| ())
-        .or_else(|e| {
-            error!("benchmark finished: {:?}", e);
-            Ok::<(), Error>(())
-        });
+    let f = tokio_timer::Timeout::new(f_client.select(f_server), duration_timeout)
+        .map(|_| ())
+        .map_err(|_e| error!("benchmark finished"));
 
-    core.run(f)
+    tokio::run(f);
+    Ok(())
 }
 
 #[derive(StructOpt, Debug, Clone)]

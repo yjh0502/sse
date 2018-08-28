@@ -5,11 +5,11 @@ extern crate bytes;
 extern crate error_chain;
 #[macro_use]
 extern crate futures;
-#[macro_use]
 extern crate hyper;
 #[macro_use]
 extern crate log;
-extern crate tokio_core;
+extern crate http;
+extern crate tokio;
 extern crate tokio_timer;
 
 use std::time::*;
@@ -20,13 +20,9 @@ use futures::stream::*;
 use futures::sync::mpsc;
 use futures::*;
 use futures::{Future, Sink, Stream};
-use hyper::header::Headers;
-use hyper::header::{AccessControlAllowOrigin, ContentType};
-use hyper::server::{Request, Response, Service};
-use hyper::{mime, Chunk, StatusCode};
-use tokio_core::reactor::*;
-
-header! { (LastEventId, "Last-Event-ID") => [String] }
+use hyper::header::*;
+use hyper::service::Service;
+use hyper::{Body, Chunk, Method, Request, Response, StatusCode};
 
 const FLUSH_DEADLINE_MS: u64 = 200;
 
@@ -46,6 +42,7 @@ pub mod error {
     error_chain! {
         foreign_links {
             Hyper(hyper::Error);
+            Http(http::Error);
         }
 
         errors {
@@ -57,87 +54,98 @@ pub mod error {
             }
         }
     }
-
 }
 
-type HttpMsg = Result<Chunk, hyper::Error>;
-type HttpSender = mpsc::Sender<HttpMsg>;
+#[derive(Debug)]
+struct RecvError;
+impl std::fmt::Display for RecvError {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "recv error")
+    }
+}
+impl std::error::Error for RecvError {}
+
+type HttpSender = mpsc::Sender<Chunk>;
+pub static LAST_EVENT_ID: &[u8] = b"last-event-id";
+
+fn get_event_id(req: &Request<Body>) -> Option<usize> {
+    let name = HeaderName::from_lowercase(LAST_EVENT_ID).ok()?;
+    let last_event_id = req.headers().get(name)?;
+    let last_event_id = std::str::from_utf8(last_event_id.as_bytes()).ok()?;
+    let event_id = last_event_id.parse::<usize>().ok()?;
+    Some(event_id)
+}
 
 #[derive(Debug)]
 pub struct Client {
-    req: Request,
+    req: Request<Body>,
     sender: HttpSender,
     seq: usize,
 }
 impl Client {
-    pub fn new(req: Request, sender: HttpSender) -> Self {
+    pub fn new(req: Request<Body>, sender: HttpSender) -> Self {
         let mut seq = 0;
-        if let Some(last_event_id) = req.headers().get::<LastEventId>() {
-            if let Ok(event_id) = last_event_id.parse::<usize>() {
-                seq = event_id + 1;
-            }
+        if let Some(event_id) = get_event_id(&req) {
+            seq = event_id + 1;
         }
 
         Self { req, sender, seq }
     }
 }
 
-fn hyper_resp_err() -> hyper::Response {
-    Response::new()
-        .with_status(StatusCode::ServiceUnavailable)
-        .with_header(AccessControlAllowOrigin::Any)
+fn hyper_resp_err() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::empty())
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
 #[derive(Clone)]
 pub struct EchoService {
-    handle: Handle,
     sender: mpsc::Sender<BroadcastRawEvent>,
-    inner: std::rc::Rc<EventService>,
+    inner: EventService,
 }
 
 impl EchoService {
-    pub fn new(handle: Handle) -> Self {
-        let (inner, sender) = EventService::pair_raw(&handle);
-        Self {
-            handle,
-            sender,
-            inner: std::rc::Rc::new(inner),
-        }
+    pub fn new() -> Self {
+        let (inner, sender) = EventService::pair_raw();
+        Self { sender, inner }
     }
 }
 
 impl Service for EchoService {
-    type Request = hyper::Request;
-    type Response = hyper::Response;
+    type ReqBody = Body;
+    type ResBody = Body;
     type Error = hyper::Error;
-    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
+    type Future = Box<Future<Item = Response<Body>, Error = Self::Error>>;
 
-    fn call(&self, req: Self::Request) -> Self::Future {
-        use hyper::Method::*;
-
+    fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
         let method = req.method().clone();
         match method {
-            Get => {
-                let inner = self.inner.clone();
-                return inner.call(req);
+            Method::GET => {
+                return self.inner.call(req);
             }
 
-            Post => {
-                let body = req.body();
+            Method::POST => {
+                let body = req.into_body();
 
                 let sender = self.sender.clone();
-                let f = body.map_err(|_e| {
-                    error!("failed to read body: {:?}", _e);
-                }).fold(sender, |sender, chunk| {
-                        let bytes: Bytes = chunk.to_vec().into();
-                        sender
-                            .send(BroadcastRawEvent::Message(bytes))
-                            .map_err(|_e| {
-                                error!("failed to send: {:?}", _e);
-                            })
-                    })
-                    .map_err(|_e| hyper::error::Error::Method)
-                    .then(|_| Ok(hyper_resp_err()));
+                let f =
+                    body.map_err(|_e| {
+                        error!("failed to read body: {:?}", _e);
+                    }).fold(sender, |sender, chunk| {
+                            let bytes: Bytes = chunk.to_vec().into();
+                            sender
+                                .send(BroadcastRawEvent::Message(bytes))
+                                .map_err(|_e| {
+                                    error!("failed to send: {:?}", _e);
+                                })
+                        })
+                        .map_err(|_e| {
+                            error!("failed to send body: {:?}", _e);
+                        })
+                        .then(|_| Ok(hyper_resp_err()));
 
                 Box::new(f)
             }
@@ -149,22 +157,19 @@ impl Service for EchoService {
 
 #[derive(Clone)]
 pub struct EventService {
-    headers: Headers,
-    sender: mpsc::Sender<(Request, HttpSender)>,
+    sender: mpsc::Sender<(Request<Body>, HttpSender)>,
 }
 
 impl EventService {
     /// (service, connection receiver) pair
-    pub fn pair(headers: Headers) -> (Self, mpsc::Receiver<(Request, HttpSender)>) {
+    pub fn pair() -> (Self, mpsc::Receiver<(Request<Body>, HttpSender)>) {
         let (sender, receiver) = mpsc::channel(10);
-        let serv = Self { headers, sender };
+        let serv = Self { sender };
         (serv, receiver)
     }
 
-    pub fn pair_raw(handle: &Handle) -> (Self, mpsc::Sender<BroadcastRawEvent>) {
-        let headers = Headers::new();
-
-        let (serv, conn_receiver) = EventService::pair(headers);
+    pub fn pair_raw() -> (Self, mpsc::Sender<BroadcastRawEvent>) {
+        let (serv, conn_receiver) = EventService::pair();
         let (sender, receiver) = mpsc::channel(10);
 
         let stream_rx = conn_receiver
@@ -183,20 +188,14 @@ impl EventService {
             .fold(broadcast, BroadcastRaw::on_event)
             .map(|_b| ());
 
-        handle.spawn(broker);
+        tokio::spawn(broker);
 
         (serv, sender)
     }
 
     /// (service, msg sender) pair
-    pub fn pair_sse(handle: &Handle, opt: BroadcastFlags) -> (Self, mpsc::Sender<BroadcastEvent>) {
-        let headers = {
-            let mut headers = Headers::new();
-            headers.set(ContentType(mime::TEXT_EVENT_STREAM));
-            headers
-        };
-
-        let (serv, conn_receiver) = EventService::pair(headers);
+    pub fn pair_sse(opt: BroadcastFlags) -> (Self, mpsc::Sender<BroadcastEvent>) {
+        let (serv, conn_receiver) = EventService::pair();
         let (sender, receiver) = mpsc::channel(10);
 
         let stream_rx = conn_receiver
@@ -215,30 +214,35 @@ impl EventService {
             .fold(broadcast, Broadcast::on_event)
             .map(|_b| ());
 
-        handle.spawn(broker);
+        tokio::spawn(broker);
 
         (serv, sender)
     }
 }
 
 impl Service for EventService {
-    type Request = Request;
-    type Response = Response;
+    type ReqBody = Body;
+    type ResBody = Body;
     type Error = hyper::Error;
-    type Future = Box<Future<Item = Response, Error = Self::Error>>;
+    type Future = Box<Future<Item = Response<Body>, Error = Self::Error> + Send>;
 
-    fn call(&self, req: Request) -> Self::Future {
-        let (sender, body) = hyper::Body::pair();
-
-        let mut headers = self.headers.clone();
-        headers.set(AccessControlAllowOrigin::Any);
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let (sender, receiver) = mpsc::channel(16);
+        let receiver: Box<Stream<Item = _, Error = _> + Send + 'static> =
+            Box::new(receiver.map_err(|_e| {
+                let e: Box<std::error::Error + Send + Sync> = Box::new(RecvError);
+                e
+            }));
+        let body = Body::from(receiver);
 
         let msg = (req, sender);
         let f = self.sender.clone().send(msg).then(|res| match res {
-            Ok(_) => Ok(Response::new()
-                .with_status(StatusCode::Ok)
-                .with_headers(headers)
-                .with_body(body)),
+            Ok(_) => Ok(Response::builder()
+                .status(hyper::StatusCode::OK)
+                .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(CONTENT_TYPE, "text/event-stream")
+                .body(body)
+                .unwrap_or_else(|_| Response::new(Body::empty()))),
             Err(_e) => {
                 // failed to register client to SSE worker
                 Ok(hyper_resp_err())
