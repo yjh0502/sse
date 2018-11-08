@@ -3,7 +3,6 @@ extern crate bitflags;
 extern crate bytes;
 #[macro_use]
 extern crate error_chain;
-#[macro_use]
 extern crate futures;
 extern crate hyper;
 #[macro_use]
@@ -131,21 +130,19 @@ impl Service for EchoService {
                 let body = req.into_body();
 
                 let sender = self.sender.clone();
-                let f =
-                    body.map_err(|_e| {
+                let f = body
+                    .map_err(|_e| {
                         error!("failed to read body: {:?}", _e);
                     }).fold(sender, |sender, chunk| {
-                            let bytes: Bytes = chunk.to_vec().into();
-                            sender
-                                .send(BroadcastRawEvent::Message(bytes))
-                                .map_err(|_e| {
-                                    error!("failed to send: {:?}", _e);
-                                })
-                        })
-                        .map_err(|_e| {
-                            error!("failed to send body: {:?}", _e);
-                        })
-                        .then(|_| Ok(hyper_resp_err()));
+                        let bytes: Bytes = chunk.to_vec().into();
+                        sender
+                            .send(BroadcastRawEvent::Message(bytes))
+                            .map_err(|_e| {
+                                error!("failed to send: {:?}", _e);
+                            })
+                    }).map_err(|_e| {
+                        error!("failed to send body: {:?}", _e);
+                    }).then(|_| Ok(hyper_resp_err()));
 
                 Box::new(f)
             }
@@ -176,11 +173,7 @@ impl EventService {
             .map(|(req, conn)| {
                 //
                 BroadcastRawEvent::NewClient(Client::new(req, conn))
-            })
-            .map_err(|_e| {
-                error!("error on accepting connections: {:?}", _e);
-                ()
-            });
+            }).map_err(|_e| error!("error on accepting connections: {:?}", _e));
 
         let broadcast = BroadcastRaw::new();
         let broker = receiver
@@ -202,8 +195,7 @@ impl EventService {
             .map(|(req, conn)| {
                 //
                 BroadcastEvent::NewClient(Client::new(req, conn))
-            })
-            .map_err(|_e| {
+            }).map_err(|_e| {
                 error!("error on accepting connections: {:?}", _e);
                 ()
             });

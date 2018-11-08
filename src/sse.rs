@@ -58,16 +58,22 @@ pub struct Broadcast {
 
     messages: Vec<Bytes>,
     message_offset: usize,
+
+    msg_connected: Bytes,
 }
 
 impl Broadcast {
     pub fn new(opt: BroadcastFlags) -> Self {
+        let msg = BroadcastMessage::new("connected", String::new());
+
         Self {
             opt,
             clients: Vec::new(),
 
             messages: Vec::new(),
             message_offset: 0,
+
+            msg_connected: msg.to_bytes(),
         }
     }
 
@@ -76,8 +82,6 @@ impl Broadcast {
     }
 
     fn on_client(mut self, client: Client) -> BroadcastFuture {
-        trace!("client {} registered", self.clients.len());
-
         // TODO: move to somewhere else?
         let mut seq = client.seq;
 
@@ -95,10 +99,15 @@ impl Broadcast {
 
         // send pending messages
         let vec_offset = seq - self.message_offset;
-        let chunks = self.messages[vec_offset..]
-            .iter()
-            .map(|s| hyper::Chunk::from(s.clone()))
-            .collect::<Vec<_>>();
+        let chunks = {
+            let pending = &self.messages[vec_offset..];
+            let mut chunks = Vec::with_capacity(pending.len() + 1);
+            for msg in pending {
+                chunks.push(hyper::Chunk::from(msg.clone()));
+            }
+            chunks.push(hyper::Chunk::from(self.msg_connected.clone()));
+            chunks
+        };
 
         let tx = vec![(client, chunks)];
         self.on_flush(clients, tx)
@@ -144,8 +153,7 @@ impl Broadcast {
                 .send_all(iter_ok(msgs))
                 .map_err(|_e| {
                     // send error. fired when client leaves
-                })
-                .map(move |_sender| c);
+                }).map(move |_sender| c);
 
             tokio_timer::Timeout::new(f, Duration::from_millis(FLUSH_DEADLINE_MS)).map_err(|_e| {
                 // send timeout. actual timeout will happens when hyper internal buffer and TCP

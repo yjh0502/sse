@@ -59,18 +59,15 @@ fn spawn_client(
         .request(req)
         .map_err(|e| -> () {
             panic!("failed to connect: {:?}", e);
-        })
-        .and_then(move |res| {
+        }).and_then(move |res| {
             res.into_body()
                 .map_err(|e| -> () {
                     panic!("failed to read body: {:?}", e);
-                })
-                .fold(counter, |counter, _chunk| {
+                }).fold(counter, |counter, _chunk| {
                     counter.count.fetch_add(1, atomic::Ordering::SeqCst);
                     ok::<Counter, ()>(counter)
                 })
-        })
-        .map(|_counter| ());
+        }).map(|_counter| ());
 
     f
 }
@@ -89,8 +86,7 @@ fn run_client(
                 .body(Body::empty())
                 .unwrap();
             spawn_client(&client, req, counter.clone())
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
 
     let f = join_all(clients)
         .map(|_| ())
@@ -121,8 +117,7 @@ fn run_server(opt: &Opt) -> Box<Future<Item = (), Error = Error> + Send> {
             event_counter += 1;
             let msg = BroadcastMessage::new("tick", body.clone());
             sender.send(BroadcastEvent::Message(msg)).map_err(|_e| ())
-        })
-        .map(|_s| -> () { panic!("tick end") });
+        }).map(|_s| -> () { panic!("tick end") });
 
     let f = stream_send.select(f_server).then(|_| {
         error!("server exit");
@@ -177,8 +172,7 @@ fn run(opt: &Opt) -> Result<()> {
             let count: usize = counter.count.load(atomic::Ordering::SeqCst);
             info!("count: {:?}, {} tps", counter.count, count - prev);
             Ok((counter, count))
-        })
-        .map(|_| ())
+        }).map(|_| ())
         .into_future();
 
     let f_client = tokio_timer::Delay::new(Instant::now() + Duration::from_secs(1))

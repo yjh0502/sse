@@ -67,8 +67,7 @@ fn main() {
         .map_err(|_e| {
             eprintln!("timer error");
             ()
-        })
-        .fold(sender, move |sender, _to| {
+        }).fold(sender, move |sender, _to| {
             let data = format!(
                 "{{\"number\": \"{}\", \"time\": \"{}\"}}",
                 event_counter,
@@ -77,8 +76,7 @@ fn main() {
             event_counter += 1;
             let msg = BroadcastMessage::new("uptime", data);
             sender.send(BroadcastEvent::Message(msg)).map_err(|_e| ())
-        })
-        .map(|_s| {
+        }).map(|_s| {
             // drop sender
             ()
         });

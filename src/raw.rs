@@ -47,8 +47,7 @@ impl BroadcastRaw {
                 .send_all(iter_ok(msgs))
                 .map_err(|_e| {
                     // send error. fired when client leaves
-                })
-                .map(move |_sender| c);
+                }).map(move |_sender| c);
 
             tokio_timer::Timeout::new(f, Duration::from_millis(FLUSH_DEADLINE_MS)).map_err(|_e| {
                 // send timeout. actual timeout will happens when hyper internal buffer and TCP

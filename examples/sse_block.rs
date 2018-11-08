@@ -36,8 +36,7 @@ fn server(addr: &str) -> Box<Future<Item = (), Error = ()> + Send> {
             event_counter += 1;
             let msg = BroadcastMessage::new("tick", body.clone());
             sender.send(BroadcastEvent::Message(msg)).map_err(|_e| ())
-        })
-        .map(|_s| eprintln!("tick end"));
+        }).map(|_s| eprintln!("tick end"));
 
     let f = f_server.select(stream_send).then(|_| Ok(()));
     Box::new(f)
